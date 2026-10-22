@@ -20,6 +20,7 @@
     tshower: 40,      // comfortable shower temperature °C
     tau: 40,          // tank cooling time constant, hours
     heaterKw: 2.5,    // electric element power
+    heaterEff: 1,     // how much of the element's nominal heat reaches usable water (learned)
     heaterMax: 60,    // electric element thermostat °C
     perPerson: 40,    // default liters of shower-temperature water per shower
     morning: '07:00',
@@ -28,7 +29,7 @@
   const saved = store.get('hwm.tank', {});
   const cfg = Object.assign({}, DEFAULTS);
   Object.keys(DEFAULTS).forEach(k => { if (saved[k] != null && saved[k] !== '') cfg[k] = saved[k]; });
-  const fam = Object.assign({ members: [], logs: [] }, store.get('hwm.family', {}));
+  const fam = Object.assign({ members: [], logs: [], boilers: [] }, store.get('hwm.family', {}));
   const saveLocal = () => { store.set('hwm.tank', cfg); store.set('hwm.family', fam); };
 
   // Every change is an op: applied locally right away, then queued for the shared sheet.
@@ -51,6 +52,15 @@
       case 'delLog':
         fam.logs = fam.logs.filter(l => l.id !== o.id);
         break;
+      case 'boiler': {
+        const i = fam.boilers.findIndex(b => b.id === o.b.id);
+        if (i >= 0) fam.boilers[i] = Object.assign({}, fam.boilers[i], o.b);
+        else fam.boilers.push(Object.assign({ min: null }, o.b));
+        break;
+      }
+      case 'delBoiler':
+        fam.boilers = fam.boilers.filter(b => b.id !== o.id);
+        break;
       case 'cfg':
         Object.assign(cfg, o.cfg);
         break;
@@ -60,6 +70,7 @@
       case 'replace':
         fam.members = o.members || [];
         fam.logs = o.logs || [];
+        fam.boilers = o.boilers || [];
         Object.keys(cfg).forEach(k => delete cfg[k]);
         Object.assign(cfg, DEFAULTS, o.cfg || {});
         break;
@@ -98,7 +109,8 @@
 
   // Server state wins; ops not yet acknowledged are replayed on top of it
   function adopt(st) {
-    applyOp({ op: 'replace', members: st.members, logs: st.logs, cfg: st.cfg });
+    // a server deployed before boiler logging returns no boilers – keep ours then
+    applyOp({ op: 'replace', members: st.members, logs: st.logs, boilers: st.boilers ?? fam.boilers, cfg: st.cfg });
     sync.outbox.forEach(applyOp);
     saveLocal();
   }
@@ -143,8 +155,8 @@
     try {
       const st = await api(null);
       // First device to connect uploads what it already has
-      if (!st.members.length && !st.logs.length && (fam.members.length || fam.logs.length)) {
-        sync.outbox = [{ op: 'replace', members: fam.members, logs: fam.logs, cfg: Object.assign({}, cfg) }];
+      if (!st.members.length && !st.logs.length && (fam.members.length || fam.logs.length || fam.boilers.length)) {
+        sync.outbox = [{ op: 'replace', members: fam.members, logs: fam.logs, boilers: fam.boilers, cfg: Object.assign({}, cfg) }];
         store.set('hwm.outbox', sync.outbox);
       } else {
         sync.outbox = [];
@@ -186,6 +198,7 @@
   }
 
   let wx = null; // { off, hours: [{ start, end, ghi, ta }] }
+  let learnNote = null; // { text, at } – survives re-renders for a few minutes
 
   // ---------- Model ----------
   const member = (id) => fam.members.find(m => m.id === id);
@@ -195,17 +208,28 @@
   const drawOf = (m) => need(m) * perLiter();
   const capacity = (T) => Math.max(0, (T - cfg.tshower) / perLiter()); // liters at shower temp
 
-  function step(T, h) {
-    const gain = (h.ghi || 0) * cfg.area * cfg.eff / 1000 * 3600 / (cfg.liters * CP);
+  const STEP = HOUR / 4;
+  // A run logged as "until I switch it off" counts up to now, and at most this long if nobody does
+  const MAX_OPEN = 3 * HOUR;
+  const runEnd = (b, now) => b.min != null ? b.t + b.min * 60000 : Math.min(now, b.t + MAX_OPEN);
+  const spansOf = (now) => fam.boilers.map(b => [b.t, runEnd(b, now)]).filter(s => s[1] > s[0]);
+  const overlap = (spans, a, b) => spans.reduce((sum, [x, y]) => sum + Math.max(0, Math.min(b, y) - Math.max(a, x)), 0);
+  const activeRun = (now) => fam.boilers.find(b => b.t <= now && now < (b.min != null ? b.t + b.min * 60000 : b.t + MAX_OPEN));
+
+  // One step [a, b) inside weather hour h: solar gain, electric element (up to its thermostat), cooling
+  function step(T, h, a, b, spans) {
+    const hrs = (b - a) / HOUR;
+    T += (h.ghi || 0) * cfg.area * cfg.eff / 1000 * 3600 * hrs / (cfg.liters * CP);
+    const on = overlap(spans, a, b) / HOUR;
+    if (on > 0 && T < cfg.heaterMax) T = Math.min(cfg.heaterMax, T + cfg.heaterKw * cfg.heaterEff * 3600 * on / (cfg.liters * CP));
     const ta = h.ta ?? cfg.tin;
-    T += gain;
-    T = ta + (T - ta) * Math.exp(-1 / cfg.tau);
+    T = ta + (T - ta) * Math.exp(-hrs / cfg.tau);
     return Math.min(T, 95);
   }
 
   // A logged shower also corrects the simulated state to match what was observed
   function applyLog(T, l) {
-    if (l.boiler) T = Math.max(T, cfg.heaterMax);
+    if (l.boiler) T = Math.max(T, cfg.heaterMax); // showers logged before boiler runs had their own log
     const d = drawOf(member(l.member));
     if (l.outcome === 'full') T = Math.max(T - d, cfg.tshower);
     else if (l.outcome === 'partial') T = Math.min(T - d, cfg.tshower - 1);
@@ -213,21 +237,24 @@
     return Math.max(T, cfg.tin);
   }
 
-  // Simulates hour by hour; returns the tank temperature just before stopAt and the trace
+  // Simulates in 15-minute steps; returns the tank temperature just before stopAt and the trace
   function run(stopAt = Infinity) {
-    const H = wx.hours;
+    const H = wx.hours, spans = spansOf(Date.now());
     const logs = fam.logs.filter(l => l.t >= H[0].start).sort((a, b) => a.t - b.t);
     let T = (H[0].ta ?? cfg.tin) + 5, li = 0;
     const pts = [];
     for (const h of H) {
-      pts.push({ t: h.start, T });
-      while (li < logs.length && logs[li].t < h.end && logs[li].t < stopAt) {
-        T = applyLog(T, logs[li]);
-        pts.push({ t: logs[li].t, T, log: logs[li] });
-        li++;
+      for (let a = h.start; a < h.end; a += STEP) {
+        const b = a + STEP;
+        pts.push({ t: a, T });
+        while (li < logs.length && logs[li].t < b && logs[li].t < stopAt) {
+          T = applyLog(T, logs[li]);
+          pts.push({ t: logs[li].t, T, log: logs[li] });
+          li++;
+        }
+        if (b > stopAt) return { T, pts };
+        T = step(T, h, a, b, spans);
       }
-      if (h.end > stopAt) return { T, pts };
-      T = step(T, h);
     }
     pts.push({ t: H[H.length - 1].end, T });
     return { T, pts };
@@ -235,21 +262,26 @@
 
   // Learn from a shower outcome, using the tank state the model had just before it
   function learn(l) {
-    if (l.boiler) return 'הדוד החשמלי היה דלוק – המקלחת נרשמה בלי ללמוד ממנה.';
     const T0 = run(l.t).T;
     const cap = capacity(T0);
     const m = member(l.member);
     const est = need(m);
-    const clampEff = () => { cfg.eff = Math.min(0.9, Math.max(0.05, +cfg.eff.toFixed(3))); };
+    // A tank-level surprise is blamed on the electric element if it ran in the 8 hours before, else on the solar side
+    const electric = overlap(spansOf(l.t), l.t - 8 * HOUR, l.t) > 0;
+    const what = electric ? 'כיול הדוד החשמלי' : 'כיול הקולטים';
+    const tune = (up) => {
+      if (electric) cfg.heaterEff = Math.min(2, Math.max(0.3, +(cfg.heaterEff * (up ? 1.15 : 0.85)).toFixed(3)));
+      else cfg.eff = Math.min(0.9, Math.max(0.05, +(cfg.eff * (up ? 1.1 : 0.9)).toFixed(3)));
+    };
     let msg = '';
     if (l.outcome === 'full') {
-      if (T0 < cfg.tshower) { cfg.eff *= 1.1; clampEff(); msg = 'המודל העריך שהדוד קר מדי – כיול הדוד עודכן כלפי מעלה.'; }
+      if (T0 < cfg.tshower) { tune(true); msg = `המודל העריך שהדוד קר מדי – ${what} עודכן כלפי מעלה.`; }
       else if (m && est > cap) { m.liters = Math.round(est + 0.5 * (cap - est)); msg = `${m.name} כנראה צריך פחות מים – עודכן ל-${m.liters} ליטר.`; }
     } else if (l.outcome === 'partial') {
-      if (cap < 5) { cfg.eff *= 1.05; clampEff(); msg = 'היו קצת מים חמים למרות שהמודל העריך שאין – כיול הדוד עודכן.'; }
+      if (cap < 5) { tune(true); msg = `היו קצת מים חמים למרות שהמודל העריך שאין – ${what} עודכן.`; }
       else if (m && est < cap) { m.liters = Math.round(est + 0.5 * (cap * 1.15 - est)); msg = `${m.name} כנראה צריך יותר מים – עודכן ל-${m.liters} ליטר.`; }
     } else if (T0 > cfg.tshower + 2) {
-      cfg.eff *= 0.9; clampEff(); msg = 'המודל העריך שיש מים חמים ולא היו – כיול הדוד עודכן כלפי מטה.';
+      tune(false); msg = `המודל העריך שיש מים חמים ולא היו – ${what} עודכן כלפי מטה.`;
     }
     if (m) {
       if (m.liters != null) m.liters = Math.min(200, Math.max(5, m.liters));
@@ -287,7 +319,7 @@
     });
     const needT = cfg.tshower + who.reduce((s, m) => s + drawOf(m), 0);
     const target = Math.min(needT, Math.max(cfg.heaterMax, T0));
-    const minutes = T0 >= needT ? 0 : Math.ceil((target - T0) * cfg.liters * CP / 3600 / cfg.heaterKw * 60);
+    const minutes = T0 >= needT ? 0 : Math.ceil((target - T0) * cfg.liters * CP / 3600 / (cfg.heaterKw * cfg.heaterEff) * 60);
     // how many of the list get a full hot shower once the tank is at `target`
     let Th = target, withHeater = 0;
     for (const m of who) { if (Th - drawOf(m) < cfg.tshower - 0.05) break; Th -= drawOf(m); withHeater++; }
@@ -305,8 +337,10 @@
   function slotCard(title, t, slot, now) {
     const p = plan(t, slot);
     const status = !p.rows.length ? '' : p.rows.every(r => r.st === 'ok') ? 'ok' : p.rows.some(r => r.st === 'ok') ? 'partial' : 'cold';
+    const running = slot === 'now' && activeRun(now);
     const advice = !p.rows.length ? `<p class="note">אפשר לשמור בערך ${ltr(fmt(p.cap) + ' ליטר')} מים ב-${cfg.tshower}°.</p>`
-      : p.minutes === 0 ? '<p class="advice ok">✅ אין צורך להדליק דוד</p>'
+      : p.minutes === 0 ? `<p class="advice ok">✅ ${running ? 'אפשר לכבות את הדוד' : 'אין צורך להדליק דוד'}</p>`
+      : running && p.minutes >= 3 ? `<p class="advice warn">🔥 הדוד דלוק – צריך עוד כ-${ltr(p.minutes)} דקות${p.withHeater < p.total ? ` (יספיק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף)` : ''}</p>`
       : p.minutes < 3 ? `<p class="advice warn">⚠️ הדוד כבר חם, אבל יספיק רק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף – כדאי לפזר את המקלחות</p>`
       : `<p class="advice warn">🔌 להדליק דוד כ-${ltr(p.minutes)} דקות לפני${p.withHeater < p.total ? ` – יספיק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף` : ''}</p>`;
     return `<div class="slot ${status}">
@@ -329,6 +363,9 @@
       .sort((a, b) => a[1] - b[1]);
     const recent = [...fam.logs].sort((a, b) => b.t - a.t).slice(0, 12);
     const defaultTime = localStr(now).slice(0, 16);
+    const active = activeRun(now);
+    const runs = [...fam.boilers].sort((a, b) => b.t - a.t).slice(0, 8);
+    const mins = (b) => Math.round((runEnd(b, now) - b.t) / 60000);
 
     root.innerHTML = `
     <section class="card fam" id="tankCard">
@@ -343,10 +380,38 @@
         <span><i style="background:var(--hot)"></i>טמפ׳ הדוד (תחזית בקו מקווקו)</span>
         <span><i style="background:none;border-top:2px dashed var(--clear);border-radius:0;height:0"></i>${cfg.tshower}°C – מקלחת נעימה</span>
         <span>● מקלחת שנרשמה</span>
+        <span><i style="background:var(--mid);opacity:.25"></i>דוד חשמלי דלוק</span>
       </div>
       ${fam.members.length ? '' : '<p class="note">הוסיפו בני משפחה (למטה) כדי לראות מי יכול להתקלח בכל זמן.</p>'}
       <div class="slots">${slots.map(s => slotCard(s[0], s[1], s[2], now)).join('')}</div>
-      <p class="note">הסדר ברשימה הוא סדר המקלחות. ההערכה מניחה שהדוד החשמלי כבוי.</p>
+      <p class="note">הסדר ברשימה הוא סדר המקלחות. ההערכה כוללת רק הדלקות דוד שנרשמו.</p>
+    </section>
+
+    <section class="card fam" id="boilerCard">
+      <h2>🔌 הדוד החשמלי</h2>
+      ${active ? `
+        <p class="boiler-on">🔥 הדוד דלוק מאז ${ltr(hhmm(active.t))} ·
+          ${active.min != null ? `ייכבה בערך ב-${ltr(hhmm(active.t + active.min * 60000))}` : `${ltr(mins(active))} דק׳ עד עכשיו`}</p>
+        <button type="button" id="boilerOff" class="primary">כיביתי את הדוד</button>` : `
+        <div class="note">הדלקתם את הדוד עכשיו? לכמה זמן:</div>
+        <div class="out-btns">
+          ${[10, 20, 30, 45, 60, 90].map(m => `<button type="button" data-boil="${m}">${ltr(m)} דק׳</button>`).join('')}
+          <button type="button" data-boil="open">עד שאכבה</button>
+        </div>`}
+      <details class="adv">
+        <summary>רישום הדלקה בדיעבד</summary>
+        <div class="log-form">
+          <label>מתי הודלק<input id="boilStart" type="datetime-local" value="${localStr(now - HOUR).slice(0, 16)}"></label>
+          <label>כמה דקות<input id="boilMin" type="number" min="1" max="600" step="1" value="30"></label>
+          <button type="button" id="boilAdd">רישום</button>
+        </div>
+      </details>
+      ${runs.length ? `<table class="logs"><thead><tr><th>מתי</th><th>משך</th><th></th></tr></thead><tbody>
+        ${runs.map(b => `<tr><td>${dayWord(b.t, now)} ${ltr(hhmm(b.t))}</td>
+          <td>${ltr(mins(b))} דק׳${b.min == null ? (b === active ? ' (דלוק)' : ' (לא נרשם כיבוי)') : ''}</td>
+          <td><button type="button" class="x" data-del-boil="${b.id}" aria-label="מחיקה">✕</button></td></tr>`).join('')}
+      </tbody></table>` : ''}
+      <p class="note">מהמקלחות שאחרי הדלקה המודל לומד כמה מהר הדוד שלכם מחמם, וככה ההמלצה "כמה דקות להדליק" משתפרת.</p>
     </section>
 
     <section class="card fam">
@@ -355,13 +420,12 @@
       <div class="log-form">
         <label>מי התקלח<select id="logWho">${fam.members.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></label>
         <label>מתי<input id="logTime" type="datetime-local" value="${defaultTime}"></label>
-        <label class="chk"><input id="logBoiler" type="checkbox"> הדוד החשמלי היה דלוק</label>
       </div>
       <div class="note">איך היו המים?</div>
       <div class="out-btns">
         ${Object.entries(OUT).map(([k, o]) => `<button type="button" data-out="${k}">${o.i} ${o.t}</button>`).join('')}
       </div>
-      <div id="learnMsg" class="note"></div>` : '<p class="note">קודם מוסיפים בני משפחה.</p>'}
+      <div id="learnMsg" class="note">${learnNote && Date.now() - learnNote.at < 10 * 60000 ? esc(learnNote.text) : ''}</div>` : '<p class="note">קודם מוסיפים בני משפחה.</p>'}
       ${recent.length ? `<table class="logs"><thead><tr><th>מתי</th><th>מי</th><th>תוצאה</th><th></th></tr></thead><tbody>
         ${recent.map(l => `<tr><td>${dayWord(l.t, now)} ${ltr(hhmm(l.t))}</td><td>${esc(member(l.member)?.name ?? '?')}${l.boiler ? ' 🔌' : ''}</td>
           <td style="color:${OUT[l.outcome].c}">${OUT[l.outcome].i} ${OUT[l.outcome].t}</td>
@@ -428,6 +492,7 @@
         <label>טמפ׳ מקלחת (°C)<input data-cfg="tshower" type="number" step="1" value="${cfg.tshower}"></label>
         <label>קצב התקררות – קבוע זמן (שעות)<input data-cfg="tau" type="number" min="5" step="1" value="${cfg.tau}"></label>
         <label>הספק גוף חימום (kW)<input data-cfg="heaterKw" type="number" min="0.5" step="0.5" value="${cfg.heaterKw}"></label>
+        <label>יעילות הדוד החשמלי (נלמד אוטומטית)<input data-cfg="heaterEff" type="number" min="0.3" max="2" step="0.05" value="${cfg.heaterEff}"></label>
         <label>טרמוסטט הדוד החשמלי (°C)<input data-cfg="heaterMax" type="number" step="1" value="${cfg.heaterMax}"></label>
         <label>ברירת מחדל לאדם (ליטר)<input data-cfg="perPerson" type="number" min="5" step="5" value="${cfg.perPerson}"></label>
         <label>שעת מקלחות בוקר<input data-cfg="morning" type="time" value="${cfg.morning}"></label>
@@ -467,6 +532,11 @@
       s += `<line x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/>`;
       s += `<text x="${padL - 4}" y="${y(v) + 4}" font-size="10" text-anchor="end" fill="var(--ink-3)">${v}°</text>`;
     }
+    const spans = spansOf(now);
+    spans.forEach(([a, b]) => {
+      const x0 = x(Math.max(a, from)), x1 = x(Math.min(b, to));
+      if (x1 > x0) s += `<rect x="${x0}" y="${padT}" width="${Math.max(1, x1 - x0)}" height="${H - padT - padB}" fill="var(--mid)" opacity=".18"/>`;
+    });
     s += `<line x1="${padL}" x2="${W - padR}" y1="${y(cfg.tshower)}" y2="${y(cfg.tshower)}" stroke="var(--clear)" stroke-width="1.5" stroke-dasharray="4 3"/>`;
     for (let t = from; t <= to; t += 6 * HOUR) {
       const lbl = hhmm(t) === '00:00' ? dayWord(t, now) : hhmm(t).slice(0, 2);
@@ -492,7 +562,8 @@
       let best = pts[0];
       pts.forEach(q => { if (Math.abs(q.t - t) < Math.abs(best.t - t)) best = q; });
       cross.setAttribute('x1', x(best.t)); cross.setAttribute('x2', x(best.t)); cross.setAttribute('visibility', 'visible');
-      const lg = best.log ? `<br>${esc(member(best.log.member)?.name ?? '?')}: ${OUT[best.log.outcome].t}` : '';
+      const lg = (best.log ? `<br>${esc(member(best.log.member)?.name ?? '?')}: ${OUT[best.log.outcome].t}` : '') +
+        (overlap(spans, best.t, best.t + 1) ? '<br>🔌 דוד חשמלי דלוק' : '');
       tip.innerHTML = `<b>${dayWord(best.t, now)} ${ltr(hhmm(best.t))}</b>${best.t > now ? ' (תחזית)' : ''}<br>${ltr('~' + fmt(best.T) + '°C')}${lg}`;
       tip.style.display = 'block';
       const box = host.getBoundingClientRect();
@@ -520,11 +591,10 @@
     } else if (b.dataset.out) {
       const v = $('logTime').value;
       const t = v ? Date.parse(v + ':00Z') - wx.off : Date.now();
-      const l = { id: uid(), member: $('logWho').value, t, outcome: b.dataset.out, boiler: $('logBoiler').checked };
-      const msg = learn(l); // updates the member's liters / cfg.eff in place
+      const l = { id: uid(), member: $('logWho').value, t, outcome: b.dataset.out };
+      learnNote = { text: 'נרשם ✓ ' + learn(l), at: Date.now() }; // learn() updates the member's liters / cfg in place
       const m = member(l.member);
-      commit([{ op: 'log', l }, { op: 'member', m: { id: m.id, liters: m.liters, n: m.n } }, { op: 'cfg', cfg: { eff: cfg.eff } }]);
-      $('learnMsg').textContent = 'נרשם ✓ ' + msg;
+      commit([{ op: 'log', l }, { op: 'member', m: { id: m.id, liters: m.liters, n: m.n } }, { op: 'cfg', cfg: { eff: cfg.eff, heaterEff: cfg.heaterEff } }]);
     } else if (b.dataset.delLog) {
       commit([{ op: 'delLog', id: b.dataset.delLog }]);
     } else if (b.dataset.delM) {
@@ -545,10 +615,22 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     } else if (b.id === 'resetLearn') {
       if (!confirm('לאפס את מה שנלמד (ליטרים לכל אחד וכיול הדוד)? יומן המקלחות יישמר.')) return;
-      commit([...fam.members.map(m => ({ op: 'member', m: { id: m.id, liters: null, n: 0 } })), { op: 'cfg', cfg: { eff: DEFAULTS.eff } }]);
+      commit([...fam.members.map(m => ({ op: 'member', m: { id: m.id, liters: null, n: 0 } })), { op: 'cfg', cfg: { eff: DEFAULTS.eff, heaterEff: DEFAULTS.heaterEff } }]);
     } else if (b.id === 'connectBtn') {
       b.disabled = true; b.textContent = 'מתחבר…';
       connect($('syncUrl').value, $('syncKey').value);
+    } else if (b.dataset.boil) {
+      const min = b.dataset.boil === 'open' ? null : +b.dataset.boil;
+      commit([{ op: 'boiler', b: { id: uid(), t: Date.now(), min } }]);
+    } else if (b.id === 'boilerOff') {
+      const r = activeRun(Date.now());
+      if (r) commit([{ op: 'boiler', b: { id: r.id, min: Math.floor((Date.now() - r.t) / 600) / 100 } }]); // rounded down so the run has ended by now
+    } else if (b.id === 'boilAdd') {
+      const v = $('boilStart').value, min = +$('boilMin').value;
+      if (!v || !(min > 0)) return;
+      commit([{ op: 'boiler', b: { id: uid(), t: Date.parse(v + ':00Z') - wx.off, min: Math.min(600, Math.round(min)) } }]);
+    } else if (b.dataset.delBoil) {
+      commit([{ op: 'delBoiler', id: b.dataset.delBoil }]);
     } else if (b.id === 'openShare') {
       $('shareBox').open = true;
       $('shareBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -597,7 +679,7 @@
       el.files[0].text().then(txt => {
         const j = JSON.parse(txt);
         if (!j.fam || !Array.isArray(j.fam.members)) throw new Error('קובץ לא תקין');
-        commit([{ op: 'replace', members: j.fam.members, logs: j.fam.logs || [], cfg: Object.assign({}, cfg, j.cfg || {}) }]);
+        commit([{ op: 'replace', members: j.fam.members, logs: j.fam.logs || [], boilers: j.fam.boilers || [], cfg: Object.assign({}, cfg, j.cfg || {}) }]);
       }).catch(err => alert('ייבוא נכשל: ' + err.message));
     }
   });
