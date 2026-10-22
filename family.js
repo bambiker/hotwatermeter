@@ -16,8 +16,11 @@
   const DEFAULTS = {
     liters: 150,      // tank volume
     area: 2,          // collector area m²
-    eff: 0.45,        // collector efficiency / calibration factor (learned)
-    tin: 20,          // cold inlet water °C
+    tilt: 45,         // collector tilt from horizontal, degrees
+    azimuth: 0,       // collector facing: 0 = south, -90 = east, 90 = west
+    eff: 0.7,         // collector optical efficiency × calibration (learned)
+    ul: 5,            // collector heat loss, W/m²·°C (more when it's cold outside)
+    tin: null,        // cold inlet water °C; null = follow the season (recent air temperature)
     tshower: 40,      // comfortable shower temperature °C
     tau: 40,          // tank cooling time constant, hours
     heaterKw: 2.5,    // electric element power
@@ -27,8 +30,13 @@
     morning: '07:00',
     evening: '19:00'
   };
+  // model 2: tilted-collector irradiance with temperature-dependent losses. Calibration learned
+  // under the old horizontal model doesn't carry over, so it starts again.
+  const MODEL = 2;
+  const MODEL_RESET = { eff: DEFAULTS.eff, tin: null, model: MODEL };
   const saved = store.get('hwm.tank', {});
-  const cfg = Object.assign({}, DEFAULTS);
+  if (saved.model !== MODEL) Object.assign(saved, MODEL_RESET);
+  const cfg = Object.assign({}, DEFAULTS, { model: MODEL });
   Object.keys(DEFAULTS).forEach(k => { if (saved[k] != null && saved[k] !== '') cfg[k] = saved[k]; });
   const fam = Object.assign({ members: [], logs: [], boilers: [] }, store.get('hwm.family', {}));
   const saveLocal = () => { store.set('hwm.tank', cfg); store.set('hwm.family', fam); };
@@ -111,10 +119,19 @@
   // Server state wins; ops not yet acknowledged are replayed on top of it
   function adopt(st) {
     // a server deployed before boiler logging returns no boilers – keep ours then
+    const before = panelKey();
     applyOp({ op: 'replace', members: st.members, logs: st.logs, boilers: st.boilers ?? fam.boilers, cfg: st.cfg });
     sync.outbox.forEach(applyOp);
     saveLocal();
+    if (cfg.model !== MODEL && !sync.outbox.some(o => o.op === 'cfg' && o.cfg.model === MODEL)) {
+      sync.outbox.push({ op: 'cfg', cfg: MODEL_RESET });
+      applyOp({ op: 'cfg', cfg: MODEL_RESET });
+      store.set('hwm.outbox', sync.outbox);
+      saveLocal();
+    }
+    if (panelKey() !== before && window.HWM) HWM.reload(); // irradiance is fetched for the collector's orientation
   }
+  const panelKey = () => cfg.tilt + '/' + cfg.azimuth;
 
   async function syncNow() {
     if (!sync.conf || sync.busy) return;
@@ -233,7 +250,13 @@
   const member = (id) => fam.members.find(m => m.id === id);
   const need = (m) => (m && m.liters != null ? m.liters : cfg.perPerson);
   // °C the tank loses per liter of shower-temperature water (energy balance, fully mixed tank)
-  const perLiter = () => Math.max(1, cfg.tshower - cfg.tin) / cfg.liters;
+  const perLiter = () => Math.max(1, cfg.tshower - tin()) / cfg.liters;
+  // Mains water follows the season: by default the average air temperature of the last days
+  function tin() {
+    if (cfg.tin != null) return cfg.tin;
+    const t = wx ? wx.hours.map(h => h.ta).filter(v => v != null) : [];
+    return t.length ? Math.round(Math.min(26, Math.max(12, t.reduce((a, b) => a + b, 0) / t.length))) : 20;
+  }
   const drawOf = (m) => need(m) * perLiter();
   // How much shower-temperature water the tank can still give before it drops to shower temperature
   // (used only for learning; cold water mixes in as hot is drawn, see perLiter)
@@ -247,13 +270,20 @@
   const overlap = (spans, a, b) => spans.reduce((sum, [x, y]) => sum + Math.max(0, Math.min(b, y) - Math.max(a, x)), 0);
   const activeRun = (now) => fam.boilers.find(b => b.t <= now && now < (b.min != null ? b.t + b.min * 60000 : b.t + MAX_OPEN));
 
+  // Useful heat from the collector over `hrs` hours, in °C of tank temperature. Flat-plate model:
+  // optical gain minus a loss that grows with (tank − air), so cold days deliver less for the same sun.
+  function solarGain(T, h, hrs) {
+    const q = cfg.area * (cfg.eff * (h.gti || 0) - cfg.ul * (T - (h.ta ?? tin()))); // W
+    return q > 0 ? q * 3600 * hrs / 1000 / (cfg.liters * CP) : 0; // thermosiphon stops when it would lose heat
+  }
+
   // One step [a, b) inside weather hour h: solar gain, electric element (up to its thermostat), cooling
-  function step(T, h, a, b, spans) {
+  function step(T, h, a, b, spans, sun) {
     const hrs = (b - a) / HOUR;
-    T += (h.ghi || 0) * cfg.area * cfg.eff / 1000 * 3600 * hrs / (cfg.liters * CP);
+    T += sun;
     const on = overlap(spans, a, b) / HOUR;
     if (on > 0 && T < cfg.heaterMax) T = Math.min(cfg.heaterMax, T + cfg.heaterKw * cfg.heaterEff * 3600 * on / (cfg.liters * CP));
-    const ta = h.ta ?? cfg.tin;
+    const ta = h.ta ?? tin();
     T = ta + (T - ta) * Math.exp(-hrs / cfg.tau);
     return Math.min(T, 95);
   }
@@ -265,15 +295,16 @@
     if (l.outcome === 'full') T = Math.max(T - d, cfg.tshower);
     else if (l.outcome === 'partial') T = Math.min(T - d, cfg.tshower - 1);
     else T = Math.min(T - d, cfg.tshower - 3);
-    return Math.max(T, cfg.tin);
+    return Math.max(T, tin());
   }
 
-  // Simulates in 15-minute steps; returns the tank temperature just before stopAt and the trace
+  // Simulates in 15-minute steps; returns the tank temperature just before stopAt, the trace,
+  // and the solar heating per local date ({ total, soFar } in °C)
   function run(stopAt = Infinity) {
-    const H = wx.hours, spans = spansOf(Date.now());
+    const H = wx.hours, now = Date.now(), spans = spansOf(now);
     const logs = fam.logs.filter(l => l.t >= H[0].start).sort((a, b) => a.t - b.t);
-    let T = (H[0].ta ?? cfg.tin) + 5, li = 0;
-    const pts = [];
+    let T = (H[0].ta ?? tin()) + 5, li = 0;
+    const pts = [], gains = {};
     for (const h of H) {
       for (let a = h.start; a < h.end; a += STEP) {
         const b = a + STEP;
@@ -283,12 +314,46 @@
           pts.push({ t: logs[li].t, T, log: logs[li] });
           li++;
         }
-        if (b > stopAt) return { T, pts };
-        T = step(T, h, a, b, spans);
+        if (b > stopAt) return { T, pts, gains };
+        const sun = solarGain(T, h, (b - a) / HOUR);
+        const g = gains[localStr(a).slice(0, 10)] ||= { total: 0, soFar: 0 };
+        g.total += sun;
+        if (b <= now) g.soFar += sun;
+        T = step(T, h, a, b, spans, sun);
       }
     }
     pts.push({ t: H[H.length - 1].end, T });
-    return { T, pts };
+    return { T, pts, gains };
+  }
+
+  // 100 = the best clear day of the year for this tank: same model on clear-sky sun, a mild day
+  // (25°C air) and a lukewarm tank (40°C) at dawn
+  let refCache = { key: '', gain: 1 };
+  function refGain() {
+    const key = [wx.lat, wx.lon, cfg.tilt, cfg.azimuth, cfg.area, cfg.eff, cfg.ul, cfg.liters].join('|');
+    if (refCache.key === key) return refCache.gain;
+    const y = new Date().getUTCFullYear();
+    let best = 1;
+    for (let doy = 0; doy < 365; doy += 7) {
+      const day = Date.UTC(y, 0, 1) + doy * DAY - wx.off; // local midnight
+      let T = 40, gain = 0;
+      for (let hr = 1; hr <= 24; hr++) {
+        const h = { gti: HWM.clearSkyHourMean(day + hr * HOUR, wx.lat, wx.lon, cfg.tilt, cfg.azimuth), ta: 25 };
+        for (let q = 0; q < 4; q++) { const s = solarGain(T, h, 0.25); gain += s; T += s; }
+      }
+      best = Math.max(best, gain);
+    }
+    refCache = { key, gain: best };
+    return best;
+  }
+
+  // Exposed to index.html for the daily cards
+  function heatByDate() {
+    const gains = run().gains, ref = refGain(), out = {};
+    for (const [date, g] of Object.entries(gains)) {
+      out[date] = { gain: g.total, gainSoFar: g.soFar, score: Math.min(100, Math.round(g.total / ref * 100)) };
+    }
+    return out;
   }
 
   // Learn from a shower outcome, using the tank state the model had just before it
@@ -302,7 +367,7 @@
     const what = electric ? 'כיול הדוד החשמלי' : 'כיול הקולטים';
     const tune = (up) => {
       if (electric) cfg.heaterEff = Math.min(2, Math.max(0.3, +(cfg.heaterEff * (up ? 1.15 : 0.85)).toFixed(3)));
-      else cfg.eff = Math.min(0.9, Math.max(0.05, +(cfg.eff * (up ? 1.1 : 0.9)).toFixed(3)));
+      else cfg.eff = Math.min(1, Math.max(0.2, +(cfg.eff * (up ? 1.1 : 0.9)).toFixed(3)));
     };
     let msg = '';
     if (l.outcome === 'full') {
@@ -345,7 +410,7 @@
     const rows = who.map(m => {
       const d = drawOf(m);
       const st = T - d >= cfg.tshower - 0.05 ? 'ok' : T > cfg.tshower ? 'partial' : 'cold';
-      T = Math.max(cfg.tin, T - d);
+      T = Math.max(tin(), T - d);
       return { m, st };
     });
     const needT = cfg.tshower + who.reduce((s, m) => s + drawOf(m), 0);
@@ -530,8 +595,12 @@
       <div class="grid-inputs">
         <label>נפח הדוד (ליטר)<input data-cfg="liters" type="number" min="30" step="10" value="${cfg.liters}"></label>
         <label>שטח קולטים (מ״ר)<input data-cfg="area" type="number" min="0.5" step="0.1" value="${cfg.area}"></label>
-        <label>נצילות / כיול (נלמד אוטומטית)<input data-cfg="eff" type="number" min="0.05" max="0.9" step="0.01" value="${cfg.eff}"></label>
-        <label>טמפ׳ מים קרים (°C)<input data-cfg="tin" type="number" step="1" value="${cfg.tin}"></label>
+        <label>זווית הקולטים (מעלות מהאופק)<input data-cfg="tilt" type="number" min="0" max="90" step="5" value="${cfg.tilt}"></label>
+        <label>כיוון הקולטים<select data-cfg="azimuth">${[[0, 'דרום'], [-45, 'דרום-מזרח'], [45, 'דרום-מערב'], [-90, 'מזרח'], [90, 'מערב']]
+          .map(([v, t]) => `<option value="${v}" ${+cfg.azimuth === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+        <label>נצילות / כיול (נלמד אוטומטית)<input data-cfg="eff" type="number" min="0.2" max="1" step="0.01" value="${cfg.eff}"></label>
+        <label>הפסדי חום של הקולט (W/m²·°C)<input data-cfg="ul" type="number" min="0" max="20" step="0.5" value="${cfg.ul}"></label>
+        <label>טמפ׳ מים קרים (°C)<input data-cfg="tin" type="number" step="1" value="${cfg.tin ?? ''}" placeholder="אוטומטי לפי העונה (~${tin()}°)"></label>
         <label>טמפ׳ מקלחת (°C)<input data-cfg="tshower" type="number" step="1" value="${cfg.tshower}"></label>
         <label>קצב התקררות – קבוע זמן (שעות)<input data-cfg="tau" type="number" min="5" step="1" value="${cfg.tau}"></label>
         <label>הספק גוף חימום (kW)<input data-cfg="heaterKw" type="number" min="0.5" step="0.5" value="${cfg.heaterKw}"></label>
@@ -552,6 +621,8 @@
 
     drawTankChart($('tankChart'), now);
     placeHome();
+    heatCache = heatByDate();
+    if (window.HWM) HWM.renderDays();
     ['famBox', 'cfgBox', 'shareBox'].forEach(id => {
       const el = $(id), key = 'hwm.open.' + id, v = store.get(key, null);
       if (v != null) el.open = v;
@@ -564,7 +635,7 @@
     const pts = run().pts.filter(p => p.t >= from && p.t <= to);
     if (pts.length < 2) { host.innerHTML = ''; return; }
     const W = Math.round(Math.min(640, Math.max(300, host.clientWidth || 640))), H = W < 480 ? 200 : 220, padL = 34, padR = 8, padT = 10, padB = 24;
-    const yMin = Math.floor(Math.min(cfg.tin, ...pts.map(p => p.T)) / 10) * 10;
+    const yMin = Math.floor(Math.min(tin(), ...pts.map(p => p.T)) / 10) * 10;
     const yMax = Math.ceil(Math.max(cfg.tshower + 10, ...pts.map(p => p.T)) / 10) * 10;
     const x = t => padL + (W - padL - padR) * (t - from) / (to - from);
     const y = v => padT + (H - padT - padB) * (1 - (v - yMin) / (yMax - yMin));
@@ -710,8 +781,13 @@
       const k = el.dataset.cfg;
       let v = null;
       if (k === 'morning' || k === 'evening') { if (el.value) v = el.value; }
-      else if (el.value !== '' && isFinite(+el.value) && +el.value > (k === 'tin' ? -10 : 0)) v = +el.value;
-      if (v != null) commit([{ op: 'cfg', cfg: { [k]: v } }]); else render();
+      else if (k === 'tin' && el.value === '') { commit([{ op: 'cfg', cfg: { tin: null } }]); return; }
+      else if (el.value !== '' && isFinite(+el.value) && (+el.value > 0 || ['tin', 'azimuth', 'tilt', 'ul'].includes(k))) v = +el.value;
+      if (v != null) {
+        const before = panelKey();
+        commit([{ op: 'cfg', cfg: { [k]: v } }]);
+        if (panelKey() !== before && window.HWM) HWM.reload();
+      } else render();
     } else if (row) {
       const m = member(row.dataset.id);
       const patch = { id: m.id };
@@ -730,15 +806,18 @@
 
   function onWeather(d) {
     const off = d.utc_offset_seconds * 1000;
+    const gti = d.hourly.global_tilted_irradiance || d.hourly.shortwave_radiation;
     wx = {
-      off,
+      off, lat: d.latitude, lon: d.longitude,
       hours: d.hourly.time.map((t, i) => {
         const end = Date.parse(t + ':00Z') - off;
-        return { start: end - HOUR, end, ghi: d.hourly.shortwave_radiation[i], ta: d.hourly.temperature_2m?.[i] };
+        return { start: end - HOUR, end, gti: gti[i], ta: d.hourly.temperature_2m?.[i] };
       })
     };
     render();
   }
+  if (window.HWM) HWM.heat = (date) => (wx ? heatCache[date] ?? null : null);
+  let heatCache = {};
   document.addEventListener('hwm:weather', (e) => onWeather(e.detail));
   if (window.HWM && HWM.weather) onWeather(HWM.weather);
 
