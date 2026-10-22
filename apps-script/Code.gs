@@ -2,13 +2,21 @@
  * Hot Water Meter – shared family storage on Google Sheets.
  *
  * Setup (once): see apps-script/README.md
- *   1. Run setup() from the editor and copy the key it logs.
+ *   1. Run setup() from the editor (creates the tabs and a key for this sheet's own family).
  *   2. Deploy → New deployment → Web app, Execute as: Me, Who has access: Anyone.
- *   3. In the site: Settings → "שיתוף עם המשפחה", paste the web-app URL and the key.
  *
- * GET  ?key=…                      → { ok, state }
- * POST { key, ops: [...] } (text)  → applies ops in order, returns { ok, state }
+ * Two modes, both served by the same deployment:
+ *   - Hosted: any family can create its own log in one tap. Each family gets a separate
+ *     spreadsheet in the deployer's Drive and its own key; the "families" tab indexes them.
+ *   - Single family: no family id, the key from setup(), data in this spreadsheet.
+ *
+ * POST { action: 'create', name }           → { ok, f, key }
+ * GET  ?f=…&key=…                           → { ok, state }
+ * POST { f, key, ops: [...] } (text/plain)  → applies ops in order, returns { ok, state }
+ * (omit f for single-family mode)
  */
+
+const MAX_NEW_FAMILIES_PER_DAY = 50;
 
 const TABLES = {
   members: ['id', 'name', 'liters', 'n', 'skip_morning', 'skip_evening'],
@@ -17,7 +25,9 @@ const TABLES = {
 };
 
 function setup() {
-  Object.keys(TABLES).forEach(sheet_);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  Object.keys(TABLES).forEach(t => sheet_(ss, t));
+  index_();
   const props = PropertiesService.getScriptProperties();
   let key = props.getProperty('KEY');
   if (!key) {
@@ -28,30 +38,90 @@ function setup() {
 }
 
 function doGet(e) {
-  return handle_(e.parameter.key, null);
+  return handle_(e.parameter.f, e.parameter.key, null);
 }
 
 function doPost(e) {
   const body = JSON.parse(e.postData.contents);
-  return handle_(body.key, body.ops || []);
+  if (body.action === 'create') return guard_(() => createFamily_(body.name));
+  return handle_(body.f, body.key, body.ops || []);
 }
 
-function handle_(key, ops) {
-  const expected = PropertiesService.getScriptProperties().getProperty('KEY');
-  if (!expected) return json_({ error: 'run setup() first' });
-  if (key !== expected) return json_({ error: 'bad key' });
+function guard_(fn) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    const st = readState_();
-    if (ops && ops.length) {
-      ops.forEach(o => applyOp_(st, o));
-      writeState_(st);
-    }
-    return json_({ ok: true, state: st });
+    return json_(fn());
+  } catch (err) {
+    return json_({ error: String(err && err.message || err) });
   } finally {
     lock.releaseLock();
   }
+}
+
+function handle_(f, key, ops) {
+  return guard_(() => {
+    const ss = open_(f, key);
+    const st = readState_(ss);
+    if (ops && ops.length) {
+      ops.forEach(o => applyOp_(st, o));
+      writeState_(ss, st);
+    }
+    return { ok: true, state: st };
+  });
+}
+
+// Resolves and authorizes the spreadsheet holding a family's data
+function open_(f, key) {
+  if (!f) {
+    const expected = PropertiesService.getScriptProperties().getProperty('KEY');
+    if (!expected) throw new Error('run setup() first');
+    if (key !== expected) throw new Error('bad key');
+    return SpreadsheetApp.getActiveSpreadsheet();
+  }
+  const fam = rowsOf_(index_(), INDEX_COLS).find(r => r.id === f);
+  if (!fam || fam.key_hash !== hash_(key)) throw new Error('bad key');
+  return SpreadsheetApp.openById(fam.sheet_id);
+}
+
+const INDEX_COLS = ['id', 'key_hash', 'sheet_id', 'name', 'created'];
+
+function index_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('families');
+  if (!sh) {
+    sh = ss.insertSheet('families');
+    sh.getRange(1, 1, 1, INDEX_COLS.length).setValues([INDEX_COLS]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    sh.getRange('A:D').setNumberFormat('@');
+  }
+  return sh;
+}
+
+function createFamily_(name) {
+  const props = PropertiesService.getScriptProperties();
+  const today = Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM-dd');
+  let quota = JSON.parse(props.getProperty('NEW_FAMILIES') || '{}');
+  if (quota.d !== today) quota = { d: today, n: 0 };
+  if (quota.n >= MAX_NEW_FAMILIES_PER_DAY) throw new Error('too many new families today');
+  quota.n++;
+  props.setProperty('NEW_FAMILIES', JSON.stringify(quota));
+
+  const f = 'f' + Utilities.getUuid().replace(/-/g, '').slice(0, 12);
+  const key = Utilities.getUuid().replace(/-/g, '').slice(0, 20);
+  const label = String(name || '').trim().slice(0, 40);
+  const ss = SpreadsheetApp.create('מד מים חמים – ' + (label || f));
+  const blank = ss.getSheets()[0];
+  Object.keys(TABLES).forEach(t => sheet_(ss, t));
+  ss.deleteSheet(blank);
+  const sh = index_();
+  sh.getRange(sh.getLastRow() + 1, 1, 1, INDEX_COLS.length).setValues([[f, hash_(key), ss.getId(), label, new Date()]]);
+  return { ok: true, f, key };
+}
+
+function hash_(s) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(s))
+    .map(b => ((b + 256) % 256).toString(16).padStart(2, '0')).join('');
 }
 
 // Same semantics as applyOp() in family.js
@@ -87,15 +157,15 @@ function applyOp_(st, o) {
   }
 }
 
-function readState_() {
-  const members = rows_('members').map(r => ({
+function readState_(ss) {
+  const members = rows_(ss, 'members').map(r => ({
     id: String(r.id),
     name: String(r.name),
     liters: r.liters === '' ? null : Number(r.liters),
     n: Number(r.n) || 0,
     skip: { morning: r.skip_morning === true, evening: r.skip_evening === true }
   }));
-  const logs = rows_('logs').map(r => ({
+  const logs = rows_(ss, 'logs').map(r => ({
     id: String(r.id),
     t: Number(r.t),
     member: String(r.member_id),
@@ -103,24 +173,23 @@ function readState_() {
     boiler: r.boiler === true
   }));
   const cfg = {};
-  rows_('config').forEach(r => {
+  rows_(ss, 'config').forEach(r => {
     try { cfg[r.key] = typeof r.value === 'string' ? JSON.parse(r.value) : r.value; } catch (e) { cfg[r.key] = r.value; }
   });
   return { members, logs, cfg };
 }
 
-function writeState_(st) {
+function writeState_(ss, st) {
   const names = {};
   st.members.forEach(m => { names[m.id] = m.name; });
-  write_('members', st.members.map(m => [m.id, m.name, m.liters == null ? '' : m.liters, m.n || 0,
+  write_(ss, 'members', st.members.map(m => [m.id, m.name, m.liters == null ? '' : m.liters, m.n || 0,
     !!(m.skip && m.skip.morning), !!(m.skip && m.skip.evening)]));
-  write_('logs', st.logs.slice().sort((a, b) => a.t - b.t).map(l => [l.id, l.t, new Date(l.t), l.member,
+  write_(ss, 'logs', st.logs.slice().sort((a, b) => a.t - b.t).map(l => [l.id, l.t, new Date(l.t), l.member,
     names[l.member] || '', l.outcome, !!l.boiler]));
-  write_('config', Object.keys(st.cfg).map(k => [k, JSON.stringify(st.cfg[k])]));
+  write_(ss, 'config', Object.keys(st.cfg).map(k => [k, JSON.stringify(st.cfg[k])]));
 }
 
-function sheet_(name) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+function sheet_(ss, name) {
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
@@ -137,18 +206,20 @@ function sheet_(name) {
   return sh;
 }
 
-function rows_(name) {
-  const sh = sheet_(name);
+function rows_(ss, name) {
+  return rowsOf_(sheet_(ss, name), TABLES[name]);
+}
+
+function rowsOf_(sh, head) {
   const n = sh.getLastRow() - 1;
   if (n < 1) return [];
-  const head = TABLES[name];
   return sh.getRange(2, 1, n, head.length).getValues()
     .filter(r => r[0] !== '')
     .map(r => Object.fromEntries(head.map((h, i) => [h, r[i]])));
 }
 
-function write_(name, data) {
-  const sh = sheet_(name);
+function write_(ss, name, data) {
+  const sh = sheet_(ss, name);
   const w = TABLES[name].length;
   const old = sh.getLastRow() - 1;
   if (old > 0) sh.getRange(2, 1, old, w).clearContent();

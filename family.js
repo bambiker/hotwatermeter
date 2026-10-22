@@ -71,15 +71,29 @@
   const typing = () => !!document.querySelector('#family input:focus, #family select:focus, #family textarea:focus');
   const sync = { conf: store.get('hwm.sync', null), outbox: store.get('hwm.outbox', []), busy: false, last: null, err: null };
 
-  async function api(ops) {
-    const { u, k } = sync.conf;
-    const r = ops
-      ? await fetch(u, { method: 'POST', body: JSON.stringify({ key: k, ops }) }) // text/plain → no CORS preflight
-      : await fetch(u + (u.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(k) + '&_=' + Date.now());
+  const HOSTED_URL = (window.HWM_HOSTED_URL || '').trim();
+
+  async function readJson(r) {
     let j;
     try { j = await r.json(); } catch { throw new Error('תשובה לא תקינה מהשרת (HTTP ' + r.status + ')'); }
-    if (j.error) throw new Error(j.error === 'bad key' ? 'מפתח שגוי' : j.error);
-    return j.state;
+    if (j.error) throw new Error(j.error === 'bad key' ? 'מפתח שגוי' : j.error === 'too many new families today' ? 'נוצרו היום יותר מדי יומנים – נסו מחר' : j.error);
+    return j;
+  }
+
+  // conf: { u: web-app URL, k: key, f: family id (hosted mode only) }
+  async function api(ops) {
+    const { u, k, f } = sync.conf;
+    const q = (f ? 'f=' + encodeURIComponent(f) + '&' : '') + 'key=' + encodeURIComponent(k);
+    const r = ops
+      ? await fetch(u, { method: 'POST', body: JSON.stringify({ f, key: k, ops }) }) // text/plain → no CORS preflight
+      : await fetch(u + (u.includes('?') ? '&' : '?') + q + '&_=' + Date.now());
+    return (await readJson(r)).state;
+  }
+
+  async function createFamily(name) {
+    const r = await fetch(HOSTED_URL, { method: 'POST', body: JSON.stringify({ action: 'create', name }) });
+    const j = await readJson(r);
+    return connect(HOSTED_URL, j.key, j.f);
   }
 
   // Server state wins; ops not yet acknowledged are replayed on top of it
@@ -122,8 +136,9 @@
     render();
   }
 
-  async function connect(u, k) {
+  async function connect(u, k, f) {
     sync.conf = { u: u.trim(), k: k.trim() };
+    if (f) sync.conf.f = f;
     sync.err = null;
     try {
       const st = await api(null);
@@ -318,7 +333,7 @@
     root.innerHTML = `
     <section class="card fam" id="tankCard">
       <h2>🚿 מצב הדוד</h2>
-      <div class="note sync-status">${syncStatusText()}</div>
+      ${sync.conf ? `<div class="note sync-status">${syncStatusText()}</div>` : '<button type="button" id="openShare" class="linkish">🔗 לשתף את היומן עם כל המשפחה</button>'}
       <div class="tank-now">
         <div><div class="k">טמפ׳ משוערת עכשיו</div><div class="big">${ltr('~' + fmt(cur) + '°C')}</div></div>
         <div><div class="k">מים חמים זמינים</div><div class="big2">${ltr('~' + fmt(capacity(cur)) + ' ל׳')}</div><div class="note">ב-${cfg.tshower}°C</div></div>
@@ -381,15 +396,26 @@
           <button type="button" id="disconnect">ניתוק המכשיר הזה</button>
         </div>
         <div id="shareMsg" class="note"></div>` : `
-        <p class="note">כדי שכל המשפחה תרשום לאותו יומן, צריך גיליון Google משותף (חד-פעמי, כ-5 דקות):
-          <a href="https://github.com/bambiker/hotwatermeter/blob/main/apps-script/README.md" target="_blank" rel="noopener">הוראות הקמה</a>.
-          מי שקיבל קישור הצטרפות – פשוט לפתוח אותו.</p>
-        <div class="grid-inputs">
-          <label>כתובת ה-Web App<input id="syncUrl" type="url" dir="ltr" placeholder="https://script.google.com/macros/s/…/exec"></label>
-          <label>מפתח<input id="syncKey" dir="ltr" autocomplete="off"></label>
+        <p class="note">כדי שכל בני המשפחה ירשמו לאותו יומן מהטלפונים שלהם.
+          <b>קיבלתם קישור הצטרפות?</b> פשוט פתחו אותו – זה הכל.</p>
+        ${HOSTED_URL ? `
+        <p>אחד מבני המשפחה יוצר יומן, ושולח לשאר את קישור ההצטרפות:</p>
+        <div class="add-row">
+          <input id="famName" placeholder="שם המשפחה (לא חובה)">
+          <button type="button" id="createFam" class="primary">✨ יצירת יומן משפחתי</button>
         </div>
-        <button type="button" id="connectBtn">התחברות</button>
-        ${sync.err ? `<p class="err">${esc(sync.err)}</p>` : ''}`}
+        <p class="note">היומן נשמר בשרת של מפעיל האתר, וגישה אליו רק עם קישור ההצטרפות.</p>` : ''}
+        ${sync.err ? `<p class="err">${esc(sync.err)}</p>` : ''}
+        <details class="adv" ${HOSTED_URL ? '' : 'open'}>
+          <summary>${HOSTED_URL ? 'מתקדם: ' : ''}שרת משלכם (גיליון Google בבעלותכם)</summary>
+          <p class="note">הקמה חד-פעמית של כ-5 דקות:
+            <a href="https://github.com/bambiker/hotwatermeter/blob/main/apps-script/README.md" target="_blank" rel="noopener">הוראות הקמה</a>.</p>
+          <div class="grid-inputs">
+            <label>כתובת ה-Web App<input id="syncUrl" type="url" dir="ltr" placeholder="https://script.google.com/macros/s/…/exec"></label>
+            <label>מפתח<input id="syncKey" dir="ltr" autocomplete="off"></label>
+          </div>
+          <button type="button" id="connectBtn">התחברות</button>
+        </details>`}
     </details>
 
     <details class="card fam" id="cfgBox">
@@ -523,6 +549,14 @@
     } else if (b.id === 'connectBtn') {
       b.disabled = true; b.textContent = 'מתחבר…';
       connect($('syncUrl').value, $('syncKey').value);
+    } else if (b.id === 'openShare') {
+      $('shareBox').open = true;
+      $('shareBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else if (b.id === 'createFam') {
+      b.disabled = true; b.textContent = 'יוצר יומן…';
+      createFamily($('famName').value).then(ok => {
+        if (ok) { $('shareBox').open = true; $('shareMsg').textContent = 'היומן נוצר ✓ עכשיו שלחו את קישור ההצטרפות לבני המשפחה 👇'; }
+      }).catch(err => { sync.err = err instanceof TypeError ? 'אין חיבור לשרת' : err.message; render(); });
     } else if (b.id === 'syncBtn') {
       syncNow();
     } else if (b.id === 'disconnect') {
@@ -586,7 +620,7 @@
 
   // shared log: join via link, pull on start, every minute and when the app comes back to the foreground
   const joined = readJoinLink();
-  if (joined && joined.u && joined.k) connect(joined.u, joined.k);
+  if (joined && joined.u && joined.k) connect(joined.u, joined.k, joined.f);
   else syncNow();
   setInterval(() => { if (document.visibilityState === 'visible') syncNow(); }, 60000);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
