@@ -52,7 +52,11 @@
   button:hover { border-color: var(--ink-3); }
   #results { display: flex; flex-direction: column; gap: 4px; }
   #results button { text-align: start; }
-  .days { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .days { display: grid; grid-template-columns: 3fr 2fr; gap: 16px; align-items: start; }
+  .day.today { border: 2px solid var(--sun); }
+  .day.today .score .num { font-size: 4.2rem; }
+  .day.yesterday .score .num { font-size: 2.2rem; }
+  .day.yesterday h2 { color: var(--ink-2); }
   @media (max-width: 720px) { .days { grid-template-columns: 1fr; } }
   .day h2 { font-size: 1.1rem; margin: 0; }
   .day .date { color: var(--ink-3); font-size: .9rem; }
@@ -136,7 +140,9 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
   };
 
-  let loc = store.get('hwm.loc', { name: 'תל אביב', lat: 32.0853, lon: 34.7818 });
+  const FALLBACK = { name: 'תל אביב', lat: 32.0853, lon: 34.7818 };
+  const saved = store.get('hwm.loc', null);
+  let loc = saved || FALLBACK;
   let lastDays = null;
 
   // ---------- Sun geometry & clear-sky model ----------
@@ -247,8 +253,8 @@
     lastDays = days;
     const yMax = Math.max(...days.flatMap(d => d.hours.map(x => Math.max(x.ghi, x.clear))), 100);
     $('days').innerHTML = '';
-    // yesterday first in reading order (RTL: appears on the right)
-    days.forEach(d => $('days').appendChild(dayCard(d, yMax)));
+    // today first: it's the one that matters (top on mobile, right side in RTL)
+    [...days].reverse().forEach(d => $('days').appendChild(dayCard(d, yMax)));
     renderCompare(days);
     renderTank();
   }
@@ -256,7 +262,7 @@
   function dayCard(d, yMax) {
     const r = rating(d.score);
     const el = document.createElement('section');
-    el.className = 'card day';
+    el.className = 'card day ' + (d.label === 'היום' ? 'today' : 'yesterday');
     el.innerHTML = `
       <h2>${d.label}</h2>
       <div class="date">${fmtDate(d.date)}</div>
@@ -368,13 +374,20 @@
   // ---------- Location ----------
   function setLoc(l) { loc = l; store.set('hwm.loc', l); $('results').innerHTML = ''; load(); }
 
-  $('geo').addEventListener('click', () => {
-    if (!navigator.geolocation) { $('status').textContent = 'הדפדפן לא תומך במיקום'; return; }
+  // onFail runs when location is unavailable (denied, unsupported, timeout)
+  function useMyLocation(onFail) {
+    if (!navigator.geolocation) { onFail('הדפדפן לא תומך במיקום'); return; }
+    $('place').textContent = '📍 מאתר מיקום…';
     navigator.geolocation.getCurrentPosition(
-      p => setLoc({ name: 'המיקום שלי', lat: +p.coords.latitude.toFixed(4), lon: +p.coords.longitude.toFixed(4) }),
-      e => { $('status').textContent = 'לא ניתן לקבל מיקום: ' + e.message; }
+      p => setLoc({ name: 'המיקום שלי', lat: +p.coords.latitude.toFixed(4), lon: +p.coords.longitude.toFixed(4), geo: true }),
+      e => onFail('לא ניתן לקבל מיקום: ' + e.message),
+      { timeout: 10000, maximumAge: 3600000 }
     );
-  });
+  }
+  $('geo').addEventListener('click', () => useMyLocation(msg => {
+    $('place').textContent = '📍 ' + loc.name;
+    $('status').textContent = msg;
+  }));
 
   async function search() {
     const q = $('q').value.trim();
@@ -397,7 +410,15 @@
   $('search').addEventListener('click', search);
   $('q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
 
-  load();
+  // Default to the device location, unless the user picked a city by search
+  if (!saved || saved.geo) {
+    useMyLocation(async msg => {
+      await load();
+      if (!$('status').textContent) $('status').textContent = msg + ' – מוצג ' + loc.name + '. אפשר לחפש עיר למעלה.';
+    });
+  } else {
+    load();
+  }
 })();
 </script>
 </body>
