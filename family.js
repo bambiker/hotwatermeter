@@ -118,7 +118,6 @@
   async function syncNow() {
     if (!sync.conf || sync.busy) return;
     sync.busy = true;
-    let again = false;
     try {
       const sending = sync.outbox.slice();
       const st = await api(sending.length ? sending : null);
@@ -127,15 +126,44 @@
       adopt(st);
       sync.last = Date.now();
       sync.err = null;
-      again = sync.outbox.length > 0;
+      homeFromFamily();
     } catch (e) {
       sync.err = e instanceof TypeError ? 'אין חיבור לשרת – השינויים יישלחו כשיחזור' : e.message;
     } finally {
       sync.busy = false;
     }
     if (!typing()) render(); else renderSyncStatus();
-    if (again) syncNow();
+    if (!sync.err && sync.outbox.length) syncNow();
   }
+
+  // ---------- Home location: shared in a family, per device for a guest ----------
+  const sameLoc = (a, b) => !!a && !!b && a.lat === b.lat && a.lon === b.lon;
+  // "my location" means the family's home once it is shared
+  const asHome = (l) => ({ name: l.geo ? 'הבית' : l.name, lat: l.lat, lon: l.lon });
+  function homeFromFamily() {
+    if (!sync.conf || !window.HWM) return;
+    if (cfg.loc) { if (!sameLoc(cfg.loc, HWM.loc)) HWM.setLoc(cfg.loc); }
+    else if (HWM.loc) { commit([{ op: 'cfg', cfg: { loc: asHome(HWM.loc) } }]); HWM.setLoc(cfg.loc); } // the first device brings its location
+    else HWM.askLoc();
+  }
+  document.addEventListener('hwm:loc', (e) => {
+    if (sync.conf && !sameLoc(cfg.loc, e.detail)) commit([{ op: 'cfg', cfg: { loc: asHome(e.detail) } }]);
+  });
+
+  // The location card lives at the top for a guest, and inside the family settings in a family
+  function placeHome() {
+    const card = $('locCard');
+    const slot = sync.conf && $('locSlot');
+    (slot || $('locHome')).appendChild(card);
+    const fp = $('famPlace');
+    fp.hidden = !(sync.conf && window.HWM && HWM.loc);
+    if (!fp.hidden) fp.innerHTML = `📍 ${esc(HWM.loc.name)} · <button type="button" id="editHome" class="linkish">שינוי מיקום הבית</button>`;
+  }
+  document.addEventListener('click', (e) => {
+    if (e.target.id !== 'editHome') return;
+    $('cfgBox').open = true;
+    $('cfgBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 
   function commit(ops) {
     ops.forEach(applyOp);
@@ -355,7 +383,8 @@
 
   function render() {
     const root = $('family');
-    if (!wx) { root.innerHTML = ''; return; }
+    $('locHome').appendChild($('locCard')); // take it out before the section is rebuilt
+    if (!wx) { root.innerHTML = ''; placeHome(); return; }
     const now = Date.now();
     const cur = run(now).T;
     const morning = nextAt(cfg.morning, now);
@@ -485,7 +514,8 @@
     </details>
 
     <details class="card fam" id="cfgBox">
-      <summary>⚙️ הגדרות הדוד</summary>
+      <summary>${sync.conf ? '⚙️ הגדרות המשפחה והדוד' : '⚙️ הגדרות הדוד'}</summary>
+      ${sync.conf ? '<div class="home-loc"><div class="k">📍 מיקום הבית – משותף לכל המשפחה</div><div id="locSlot"></div></div>' : ''}
       <div class="grid-inputs">
         <label>נפח הדוד (ליטר)<input data-cfg="liters" type="number" min="30" step="10" value="${cfg.liters}"></label>
         <label>שטח קולטים (מ״ר)<input data-cfg="area" type="number" min="0.5" step="0.1" value="${cfg.area}"></label>
@@ -506,10 +536,11 @@
         <label class="file-btn">⬆️ ייבוא נתונים<input id="importFile" type="file" accept="application/json" hidden></label>
         <button type="button" id="resetLearn">↺ איפוס הלמידה</button>
       </div>
-      <p class="note">${sync.conf ? 'הגדרות הדוד משותפות לכל המשפחה.' : 'בלי שיתוף, הנתונים נשמרים רק בדפדפן הזה.'}</p>
+      <p class="note">${sync.conf ? 'ההגדרות ומיקום הבית משותפים לכל המשפחה.' : 'בלי שיתוף, הנתונים נשמרים רק בדפדפן הזה.'}</p>
     </details>`;
 
     drawTankChart($('tankChart'), now);
+    placeHome();
     ['famBox', 'cfgBox', 'shareBox'].forEach(id => {
       const el = $(id), key = 'hwm.open.' + id, v = store.get(key, null);
       if (v != null) el.open = v;
