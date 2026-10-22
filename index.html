@@ -20,18 +20,19 @@
     --mid: #b26a00;
     --bad: #c62828;
     --accent: #1f5fbf;
+    --hot: #d84315;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #141416; --surface: #1d1d20; --ink: #f2f2f4; --ink-2: #b5b5bc; --ink-3: #85858d;
       --line: #313136; --sun: #f5a524; --sun-soft: #7a5a22; --clear: #7c7c85;
-      --good: #66bb6a; --mid: #f0a040; --bad: #ef6b6b; --accent: #6ea2f0;
+      --good: #66bb6a; --mid: #f0a040; --bad: #ef6b6b; --accent: #6ea2f0; --hot: #ff7a50;
     }
   }
   :root[data-theme="dark"] {
     --bg: #141416; --surface: #1d1d20; --ink: #f2f2f4; --ink-2: #b5b5bc; --ink-3: #85858d;
     --line: #313136; --sun: #f5a524; --sun-soft: #7a5a22; --clear: #7c7c85;
-    --good: #66bb6a; --mid: #f0a040; --bad: #ef6b6b; --accent: #6ea2f0;
+    --good: #66bb6a; --mid: #f0a040; --bad: #ef6b6b; --accent: #6ea2f0; --hot: #ff7a50;
   }
   * { box-sizing: border-box; }
   body {
@@ -80,14 +81,41 @@
   }
   .compare { margin-top: 16px; }
   .compare strong { font-variant-numeric: tabular-nums; }
-  details.tank { margin-top: 16px; }
-  details.tank summary { cursor: pointer; font-weight: 600; }
   .grid-inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 12px 0; }
   .grid-inputs label { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; color: var(--ink-2); }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th, td { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: start; }
   th { color: var(--ink-3); font-weight: 500; font-size: .85rem; }
   .err { color: var(--bad); }
+  .fam { margin-top: 16px; }
+  .fam h2 { font-size: 1.15rem; margin: 0 0 10px; }
+  details.fam summary { cursor: pointer; font-weight: 600; font-size: 1.05rem; }
+  .tank-now { display: flex; gap: 32px; flex-wrap: wrap; margin-bottom: 8px; }
+  .tank-now .k { color: var(--ink-3); font-size: .8rem; }
+  .tank-now .big { font-size: 2.6rem; font-weight: 700; line-height: 1.1; color: var(--hot); font-variant-numeric: tabular-nums; }
+  .tank-now .big2 { font-size: 1.6rem; font-weight: 700; line-height: 1.3; font-variant-numeric: tabular-nums; }
+  .slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 14px; }
+  .slot { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; border-inline-start: 4px solid var(--line); }
+  .slot.ok { border-inline-start-color: var(--good); }
+  .slot.partial { border-inline-start-color: var(--mid); }
+  .slot.cold { border-inline-start-color: var(--bad); }
+  .slot-t { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .who { list-style: none; padding: 0; margin: 6px 0; }
+  .who li { padding: 2px 0; }
+  .advice { margin: 6px 0 0; font-weight: 600; font-size: .9rem; }
+  .advice.ok { color: var(--good); } .advice.warn { color: var(--mid); }
+  .log-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 10px; }
+  .log-form label { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; color: var(--ink-2); }
+  .log-form label.chk { flex-direction: row; align-items: center; gap: 6px; padding-bottom: 8px; }
+  .out-btns { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 4px; }
+  .out-btns button { padding: 10px 14px; font-weight: 600; }
+  .logs, .members { margin-top: 12px; }
+  .members input:not([type=checkbox]) { width: 100%; min-width: 60px; }
+  .add-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .x { padding: 2px 8px; color: var(--ink-3); }
+  .x:disabled { opacity: .3; cursor: default; }
+  .file-btn { font: inherit; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+  @media (max-width: 560px) { .members th:nth-child(3), .members td:nth-child(3) { display: none; } }
   footer { color: var(--ink-3); font-size: .8rem; margin-top: 24px; }
   footer a { color: var(--accent); }
 </style>
@@ -95,7 +123,7 @@
 <body>
 <main>
   <h1>☀️ מד מים חמים</h1>
-  <p class="sub">כמה שמש הייתה היום? ציון יומי לפי קרינת השמש בפועל (כולל השפעת העננים) לעומת יום בהיר לגמרי – והשוואה לאתמול.</p>
+  <p class="sub">כמה שמש הייתה היום, כמה חמים המים בדוד, ומי יכול להתקלח בלי להדליק דוד – לומד מכל מקלחת שנרשמת.</p>
 
   <div class="card loc">
     <span class="place" id="place">…</span>
@@ -110,25 +138,12 @@
 
   <div class="card compare" id="compare" hidden></div>
 
-  <details class="card tank" id="tank">
-    <summary>🛢️ הערכת חימום הדוד (לכיול)</summary>
-    <p class="note">הערכה גסה: אנרגיית השמש × שטח הקולטים × נצילות ÷ (נפח הדוד × חום סגולי של מים). את מקדם הנצילות מכיילים לפי מה שמודדים בפועל בדוד.</p>
-    <div class="grid-inputs">
-      <label>נפח הדוד (ליטר)<input id="liters" type="number" min="30" step="10" value="150"></label>
-      <label>שטח קולטים (מ״ר)<input id="area" type="number" min="0.5" step="0.1" value="2"></label>
-      <label>נצילות / מקדם כיול (0–1)<input id="eff" type="number" min="0.05" max="1" step="0.05" value="0.45"></label>
-      <label>טמפ׳ מים נכנסים (°C)<input id="tin" type="number" step="1" value="20"></label>
-      <label>טמפ׳ "מספיק חם" (°C)<input id="tok" type="number" step="1" value="45"></label>
-    </div>
-    <table>
-      <thead><tr><th></th><th>אנרגיה לקולט (kWh)</th><th>חימום (°C)</th><th>טמפ׳ משוערת</th><th>מספיק?</th></tr></thead>
-      <tbody id="tankBody"></tbody>
-    </table>
-  </details>
+  <div id="family"></div>
 
   <footer>
     נתונים: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (shortwave_radiation – קרינה גלובלית על משטח אופקי, ממוצע שעתי).
     ה"יום הבהיר" מחושב לפי מודל Haurwitz ממיקום השמש. שעות היום שעוד לא עברו הן תחזית.
+    טמפ׳ הדוד היא סימולציה: חימום מהשמש לפי הקרינה, התקררות לפי טמפ׳ האוויר, ותיקון לפי המקלחות שנרשמו.
   </footer>
 </main>
 
@@ -143,7 +158,6 @@
   const FALLBACK = { name: 'תל אביב', lat: 32.0853, lon: 34.7818 };
   const saved = store.get('hwm.loc', null);
   let loc = saved || FALLBACK;
-  let lastDays = null;
 
   // ---------- Sun geometry & clear-sky model ----------
   const rad = Math.PI / 180;
@@ -190,7 +204,7 @@
     $('status').textContent = 'טוען נתונים…';
     $('status').classList.remove('err');
     const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + loc.lat + '&longitude=' + loc.lon +
-      '&hourly=shortwave_radiation,cloud_cover&past_days=1&forecast_days=1&timezone=auto';
+      '&hourly=shortwave_radiation,cloud_cover,temperature_2m&past_days=3&forecast_days=2&timezone=auto';
     try {
       const r = await fetch(url);
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -221,8 +235,10 @@
         future: endUtc > nowUtc
       });
     });
-    const dates = [...byDate.keys()].sort();
-    return dates.slice(-2).map((date, idx) => {
+    // local "today" at the location; yesterday is the day before it
+    const today = new Date(nowUtc + off).toISOString().slice(0, 10);
+    const yday = new Date(Date.parse(today + 'T12:00:00Z') - 86400000).toISOString().slice(0, 10);
+    return [yday, today].filter(d => byDate.has(d)).map((date) => {
       const hours = byDate.get(date);
       const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
       const actual = sum(hours, x => x.ghi) / 1000;     // kWh/m²
@@ -233,7 +249,7 @@
       const daylight = hours.filter(x => x.clear > 20);
       const cloudAvg = daylight.length ? sum(daylight, x => x.cloud ?? 0) / daylight.length : null;
       return {
-        date, hours, label: idx === 1 ? 'היום' : 'אתמול',
+        date, hours, label: date === today ? 'היום' : 'אתמול',
         actual, clear, actualSoFar, clearSoFar,
         score: clear > 0 ? Math.min(100, Math.round(actual / clear * 100)) : 0,
         scoreSoFar: clearSoFar > 0 ? Math.min(100, Math.round(actualSoFar / clearSoFar * 100)) : null,
@@ -250,13 +266,12 @@
 
   function render(data) {
     const days = buildDays(data);
-    lastDays = days;
     const yMax = Math.max(...days.flatMap(d => d.hours.map(x => Math.max(x.ghi, x.clear))), 100);
     $('days').innerHTML = '';
     // today first: it's the one that matters (top on mobile, right side in RTL)
     [...days].reverse().forEach(d => $('days').appendChild(dayCard(d, yMax)));
     renderCompare(days);
-    renderTank();
+    document.dispatchEvent(new CustomEvent('hwm:weather', { detail: data }));
   }
 
   function dayCard(d, yMax) {
@@ -347,30 +362,6 @@
       (${ltr((diff >= 0 ? '+' : '') + diff)} נק׳)${pct != null ? `, אנרגיה ${ltr((pct >= 0 ? '+' : '') + pct + '%')}` : ''}${t.partial ? ' <span class="note">(היום כולל תחזית לשעות שנותרו)</span>' : ''}`;
   }
 
-  // ---------- Tank estimate ----------
-  const tankFields = ['liters', 'area', 'eff', 'tin', 'tok'];
-  const savedTank = store.get('hwm.tank', null);
-  if (savedTank) tankFields.forEach(k => { if (savedTank[k] != null) $(k).value = savedTank[k]; });
-  if (store.get('hwm.tankOpen', false)) $('tank').open = true;
-  $('tank').addEventListener('toggle', () => store.set('hwm.tankOpen', $('tank').open));
-  tankFields.forEach(k => $(k).addEventListener('input', () => {
-    store.set('hwm.tank', Object.fromEntries(tankFields.map(f => [f, +$(f).value])));
-    renderTank();
-  }));
-
-  function renderTank() {
-    if (!lastDays) return;
-    const L = +$('liters').value, A = +$('area').value, eff = +$('eff').value, tin = +$('tin').value, tok = +$('tok').value;
-    $('tankBody').innerHTML = lastDays.map(d => {
-      const kWh = d.actual * A * eff;
-      const dT = L > 0 ? kWh * 3600 / (L * 4.186) : 0; // kJ / (kg · kJ/kg°C)
-      const T = Math.min(tin + dT, 95);
-      const ok = T >= tok;
-      return `<tr><td><b>${d.label}</b></td><td>${fmt(kWh, 2)}</td><td>${ltr('+' + fmt(dT, 0))}</td><td>${fmt(T, 0)}°C</td>
-        <td>${ok ? '✅ כן' : '❌ לא'}</td></tr>`;
-    }).join('');
-  }
-
   // ---------- Location ----------
   function setLoc(l) { loc = l; store.set('hwm.loc', l); $('results').innerHTML = ''; load(); }
 
@@ -421,5 +412,6 @@
   }
 })();
 </script>
+<script src="family.js"></script>
 </body>
 </html>
