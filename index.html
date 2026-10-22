@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>מד מים חמים</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="icon" href="icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#e08a00">
 <meta name="description" content="ציון יומי לקרינת השמש (Open-Meteo) – היום מול אתמול – להערכת חימום הדוד">
 <style>
   :root {
@@ -40,7 +45,8 @@
     font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif; line-height: 1.5;
   }
   main { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
-  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
+  h1 .logo { width: 44px; height: 44px; }
   .sub { color: var(--ink-2); margin: 0 0 20px; }
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
   .loc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
@@ -134,7 +140,7 @@
 </head>
 <body>
 <main>
-  <h1>☀️ מד מים חמים</h1>
+  <h1><img src="logo.svg" alt="" class="logo">מד מים חמים</h1>
   <p class="sub">כמה שמש הייתה היום, כמה חמים המים בדוד, ומי יכול להתקלח בלי להדליק דוד – לומד מכל מקלחת שנרשמת.</p>
 
   <p id="famPlace" class="note" hidden></p>
