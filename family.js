@@ -29,8 +29,146 @@
   const cfg = Object.assign({}, DEFAULTS);
   Object.keys(DEFAULTS).forEach(k => { if (saved[k] != null && saved[k] !== '') cfg[k] = saved[k]; });
   const fam = Object.assign({ members: [], logs: [] }, store.get('hwm.family', {}));
-  const saveCfg = () => store.set('hwm.tank', cfg);
-  const saveFam = () => store.set('hwm.family', fam);
+  const saveLocal = () => { store.set('hwm.tank', cfg); store.set('hwm.family', fam); };
+
+  // Every change is an op: applied locally right away, then queued for the shared sheet.
+  // apps-script/Code.gs implements the same applyOp on the server.
+  function applyOp(o) {
+    switch (o.op) {
+      case 'member': {
+        const i = fam.members.findIndex(m => m.id === o.m.id);
+        if (i >= 0) fam.members[i] = Object.assign({}, fam.members[i], o.m);
+        else fam.members.push(Object.assign({ liters: null, n: 0, skip: {} }, o.m));
+        break;
+      }
+      case 'delMember':
+        fam.members = fam.members.filter(m => m.id !== o.id);
+        fam.logs = fam.logs.filter(l => l.member !== o.id);
+        break;
+      case 'log':
+        if (!fam.logs.some(l => l.id === o.l.id)) fam.logs.push(Object.assign({}, o.l));
+        break;
+      case 'delLog':
+        fam.logs = fam.logs.filter(l => l.id !== o.id);
+        break;
+      case 'cfg':
+        Object.assign(cfg, o.cfg);
+        break;
+      case 'order':
+        fam.members.sort((a, b) => o.ids.indexOf(a.id) - o.ids.indexOf(b.id));
+        break;
+      case 'replace':
+        fam.members = o.members || [];
+        fam.logs = o.logs || [];
+        Object.keys(cfg).forEach(k => delete cfg[k]);
+        Object.assign(cfg, DEFAULTS, o.cfg || {});
+        break;
+    }
+  }
+
+  // ---------- Shared storage (Google Sheets via Apps Script) ----------
+  // don't re-render under the user's fingers while they are filling a field
+  const typing = () => !!document.querySelector('#family input:focus, #family select:focus, #family textarea:focus');
+  const sync = { conf: store.get('hwm.sync', null), outbox: store.get('hwm.outbox', []), busy: false, last: null, err: null };
+
+  async function api(ops) {
+    const { u, k } = sync.conf;
+    const r = ops
+      ? await fetch(u, { method: 'POST', body: JSON.stringify({ key: k, ops }) }) // text/plain → no CORS preflight
+      : await fetch(u + (u.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(k) + '&_=' + Date.now());
+    let j;
+    try { j = await r.json(); } catch { throw new Error('תשובה לא תקינה מהשרת (HTTP ' + r.status + ')'); }
+    if (j.error) throw new Error(j.error === 'bad key' ? 'מפתח שגוי' : j.error);
+    return j.state;
+  }
+
+  // Server state wins; ops not yet acknowledged are replayed on top of it
+  function adopt(st) {
+    applyOp({ op: 'replace', members: st.members, logs: st.logs, cfg: st.cfg });
+    sync.outbox.forEach(applyOp);
+    saveLocal();
+  }
+
+  async function syncNow() {
+    if (!sync.conf || sync.busy) return;
+    sync.busy = true;
+    let again = false;
+    try {
+      const sending = sync.outbox.slice();
+      const st = await api(sending.length ? sending : null);
+      sync.outbox = sync.outbox.slice(sending.length);
+      store.set('hwm.outbox', sync.outbox);
+      adopt(st);
+      sync.last = Date.now();
+      sync.err = null;
+      again = sync.outbox.length > 0;
+    } catch (e) {
+      sync.err = e instanceof TypeError ? 'אין חיבור לשרת – השינויים יישלחו כשיחזור' : e.message;
+    } finally {
+      sync.busy = false;
+    }
+    if (!typing()) render(); else renderSyncStatus();
+    if (again) syncNow();
+  }
+
+  function commit(ops) {
+    ops.forEach(applyOp);
+    saveLocal();
+    if (sync.conf) {
+      sync.outbox.push(...ops);
+      store.set('hwm.outbox', sync.outbox);
+      syncNow();
+    }
+    render();
+  }
+
+  async function connect(u, k) {
+    sync.conf = { u: u.trim(), k: k.trim() };
+    sync.err = null;
+    try {
+      const st = await api(null);
+      // First device to connect uploads what it already has
+      if (!st.members.length && !st.logs.length && (fam.members.length || fam.logs.length)) {
+        sync.outbox = [{ op: 'replace', members: fam.members, logs: fam.logs, cfg: Object.assign({}, cfg) }];
+        store.set('hwm.outbox', sync.outbox);
+      } else {
+        sync.outbox = [];
+        store.set('hwm.outbox', sync.outbox);
+        adopt(st);
+      }
+      store.set('hwm.sync', sync.conf);
+      await syncNow();
+      return true;
+    } catch (e) {
+      sync.conf = null;
+      sync.err = e.message;
+      render();
+      return false;
+    }
+  }
+
+  const joinLink = () => location.origin + location.pathname + '#join=' +
+    btoa(unescape(encodeURIComponent(JSON.stringify(sync.conf)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  function readJoinLink() {
+    const m = location.hash.match(/join=([A-Za-z0-9_-]+)/);
+    if (!m) return null;
+    history.replaceState(null, '', location.pathname + location.search);
+    try {
+      const b = m[1].replace(/-/g, '+').replace(/_/g, '/');
+      return JSON.parse(decodeURIComponent(escape(atob(b + '==='.slice((b.length + 3) % 4)))));
+    } catch { return null; }
+  }
+
+  function syncStatusText() {
+    if (!sync.conf) return '';
+    if (sync.err) return `⚠️ בעיה בסנכרון: ${esc(sync.err)}${sync.outbox.length ? ' · יש שינויים שממתינים לשליחה' : ''}`;
+    if (sync.busy && !sync.last) return '⏳ מסנכרן…';
+    return `🔗 משותף עם המשפחה${sync.last ? ' · עודכן ' + new Date(sync.last).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }) : ''}${sync.outbox.length ? ' · ממתין לשליחה' : ''}`;
+  }
+  function renderSyncStatus() {
+    document.querySelectorAll('.sync-status').forEach(el => { el.innerHTML = syncStatusText(); });
+  }
 
   let wx = null; // { off, hours: [{ start, end, ghi, ta }] }
 
@@ -87,7 +225,7 @@
     const cap = capacity(T0);
     const m = member(l.member);
     const est = need(m);
-    const clampEff = () => { cfg.eff = Math.min(0.9, Math.max(0.05, +cfg.eff.toFixed(3))); saveCfg(); };
+    const clampEff = () => { cfg.eff = Math.min(0.9, Math.max(0.05, +cfg.eff.toFixed(3))); };
     let msg = '';
     if (l.outcome === 'full') {
       if (T0 < cfg.tshower) { cfg.eff *= 1.1; clampEff(); msg = 'המודל העריך שהדוד קר מדי – כיול הדוד עודכן כלפי מעלה.'; }
@@ -180,6 +318,7 @@
     root.innerHTML = `
     <section class="card fam" id="tankCard">
       <h2>🚿 מצב הדוד</h2>
+      <div class="note sync-status">${syncStatusText()}</div>
       <div class="tank-now">
         <div><div class="k">טמפ׳ משוערת עכשיו</div><div class="big">${ltr('~' + fmt(cur) + '°C')}</div></div>
         <div><div class="k">מים חמים זמינים</div><div class="big2">${ltr('~' + fmt(capacity(cur)) + ' ל׳')}</div><div class="note">ב-${cfg.tshower}°C</div></div>
@@ -231,6 +370,28 @@
       <div class="add-row"><input id="newName" placeholder="שם (למשל: נועה)"><button type="button" id="addMember">➕ הוספה</button></div>
     </details>
 
+    <details class="card fam" id="shareBox">
+      <summary>🔗 שיתוף עם המשפחה</summary>
+      ${sync.conf ? `
+        <p class="sync-status">${syncStatusText()}</p>
+        <p class="note">כל מי שפותח את קישור ההצטרפות בטלפון שלו רואה ורושם לאותו יומן משותף.</p>
+        <div class="add-row">
+          <button type="button" id="shareLink">📤 שליחת קישור הצטרפות</button>
+          <button type="button" id="syncBtn">🔄 סנכרון עכשיו</button>
+          <button type="button" id="disconnect">ניתוק המכשיר הזה</button>
+        </div>
+        <div id="shareMsg" class="note"></div>` : `
+        <p class="note">כדי שכל המשפחה תרשום לאותו יומן, צריך גיליון Google משותף (חד-פעמי, כ-5 דקות):
+          <a href="https://github.com/bambiker/hotwatermeter/blob/main/apps-script/README.md" target="_blank" rel="noopener">הוראות הקמה</a>.
+          מי שקיבל קישור הצטרפות – פשוט לפתוח אותו.</p>
+        <div class="grid-inputs">
+          <label>כתובת ה-Web App<input id="syncUrl" type="url" dir="ltr" placeholder="https://script.google.com/macros/s/…/exec"></label>
+          <label>מפתח<input id="syncKey" dir="ltr" autocomplete="off"></label>
+        </div>
+        <button type="button" id="connectBtn">התחברות</button>
+        ${sync.err ? `<p class="err">${esc(sync.err)}</p>` : ''}`}
+    </details>
+
     <details class="card fam" id="cfgBox">
       <summary>⚙️ הגדרות הדוד</summary>
       <div class="grid-inputs">
@@ -252,11 +413,11 @@
         <label class="file-btn">⬆️ ייבוא נתונים<input id="importFile" type="file" accept="application/json" hidden></label>
         <button type="button" id="resetLearn">↺ איפוס הלמידה</button>
       </div>
-      <p class="note">הנתונים נשמרים רק בדפדפן הזה. כדי להעביר לטלפון אחר – ייצוא ואז ייבוא.</p>
+      <p class="note">${sync.conf ? 'הגדרות הדוד משותפות לכל המשפחה.' : 'בלי שיתוף, הנתונים נשמרים רק בדפדפן הזה.'}</p>
     </details>`;
 
     drawTankChart($('tankChart'), now);
-    ['famBox', 'cfgBox'].forEach(id => {
+    ['famBox', 'cfgBox', 'shareBox'].forEach(id => {
       const el = $(id), key = 'hwm.open.' + id, v = store.get(key, null);
       if (v != null) el.open = v;
       el.addEventListener('toggle', () => store.set(key, el.open));
@@ -320,7 +481,7 @@
   }
 
   // ---------- Events (delegated; the section is re-rendered on every change) ----------
-  const uid = () => Math.random().toString(36).slice(2, 10);
+  const uid = () => 'x' + Math.random().toString(36).slice(2, 10); // letter prefix keeps Sheets from reading it as a number
 
   document.addEventListener('click', (e) => {
     const b = e.target.closest('button');
@@ -328,30 +489,27 @@
     if (b.id === 'addMember') {
       const name = $('newName').value.trim();
       if (!name) return;
-      fam.members.push({ id: uid(), name, liters: null, n: 0 });
-      saveFam(); render();
+      commit([{ op: 'member', m: { id: uid(), name, liters: null, n: 0, skip: {} } }]);
       $('newName').focus();
     } else if (b.dataset.out) {
       const v = $('logTime').value;
       const t = v ? Date.parse(v + ':00Z') - wx.off : Date.now();
       const l = { id: uid(), member: $('logWho').value, t, outcome: b.dataset.out, boiler: $('logBoiler').checked };
-      const msg = learn(l);
-      fam.logs.push(l);
-      saveFam(); render();
+      const msg = learn(l); // updates the member's liters / cfg.eff in place
+      const m = member(l.member);
+      commit([{ op: 'log', l }, { op: 'member', m: { id: m.id, liters: m.liters, n: m.n } }, { op: 'cfg', cfg: { eff: cfg.eff } }]);
       $('learnMsg').textContent = 'נרשם ✓ ' + msg;
     } else if (b.dataset.delLog) {
-      fam.logs = fam.logs.filter(l => l.id !== b.dataset.delLog);
-      saveFam(); render();
+      commit([{ op: 'delLog', id: b.dataset.delLog }]);
     } else if (b.dataset.delM) {
       const m = member(b.dataset.delM);
       if (!confirm(`למחוק את ${m.name}?`)) return;
-      fam.members = fam.members.filter(x => x.id !== m.id);
-      fam.logs = fam.logs.filter(l => l.member !== m.id);
-      saveFam(); render();
+      commit([{ op: 'delMember', id: m.id }]);
     } else if (b.dataset.up) {
       const i = +b.dataset.up;
-      [fam.members[i - 1], fam.members[i]] = [fam.members[i], fam.members[i - 1]];
-      saveFam(); render();
+      const ids = fam.members.map(x => x.id);
+      [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
+      commit([{ op: 'order', ids }]);
     } else if (b.id === 'exportBtn') {
       const blob = new Blob([JSON.stringify({ cfg, fam }, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
@@ -361,9 +519,22 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     } else if (b.id === 'resetLearn') {
       if (!confirm('לאפס את מה שנלמד (ליטרים לכל אחד וכיול הדוד)? יומן המקלחות יישמר.')) return;
-      fam.members.forEach(m => { m.liters = null; m.n = 0; });
-      cfg.eff = DEFAULTS.eff;
-      saveFam(); saveCfg(); render();
+      commit([...fam.members.map(m => ({ op: 'member', m: { id: m.id, liters: null, n: 0 } })), { op: 'cfg', cfg: { eff: DEFAULTS.eff } }]);
+    } else if (b.id === 'connectBtn') {
+      b.disabled = true; b.textContent = 'מתחבר…';
+      connect($('syncUrl').value, $('syncKey').value);
+    } else if (b.id === 'syncBtn') {
+      syncNow();
+    } else if (b.id === 'disconnect') {
+      if (!confirm('לנתק את המכשיר הזה מהיומן המשותף? הנתונים יישארו בגיליון ובשאר הטלפונים.')) return;
+      sync.conf = null; sync.outbox = []; sync.last = null; sync.err = null;
+      store.set('hwm.sync', null); store.set('hwm.outbox', []);
+      render();
+    } else if (b.id === 'shareLink') {
+      const url = joinLink();
+      const done = (t) => { $('shareMsg').textContent = t; };
+      if (navigator.share) navigator.share({ title: 'מד מים חמים', text: 'הצטרפות ליומן המקלחות של המשפחה', url }).catch(() => {});
+      else navigator.clipboard.writeText(url).then(() => done('הקישור הועתק ✓ – שלחו אותו לבני המשפחה'), () => done(url));
     }
   });
 
@@ -377,22 +548,22 @@
     const row = el.closest('tr[data-id]');
     if (el.dataset.cfg) {
       const k = el.dataset.cfg;
-      if (k === 'morning' || k === 'evening') { if (el.value) cfg[k] = el.value; }
-      else if (el.value !== '' && isFinite(+el.value) && +el.value > (k === 'tin' ? -10 : 0)) cfg[k] = +el.value;
-      saveCfg(); render();
+      let v = null;
+      if (k === 'morning' || k === 'evening') { if (el.value) v = el.value; }
+      else if (el.value !== '' && isFinite(+el.value) && +el.value > (k === 'tin' ? -10 : 0)) v = +el.value;
+      if (v != null) commit([{ op: 'cfg', cfg: { [k]: v } }]); else render();
     } else if (row) {
       const m = member(row.dataset.id);
-      if (el.classList.contains('m-name')) { if (el.value.trim()) m.name = el.value.trim(); }
-      else if (el.classList.contains('m-liters')) m.liters = el.value === '' ? null : Math.min(200, Math.max(5, +el.value));
-      else if (el.classList.contains('m-slot')) { m.skip = m.skip || {}; m.skip[el.dataset.slot] = !el.checked; }
-      saveFam(); render();
+      const patch = { id: m.id };
+      if (el.classList.contains('m-name')) { if (el.value.trim()) patch.name = el.value.trim(); }
+      else if (el.classList.contains('m-liters')) patch.liters = el.value === '' ? null : Math.min(200, Math.max(5, +el.value));
+      else if (el.classList.contains('m-slot')) patch.skip = Object.assign({}, m.skip, { [el.dataset.slot]: !el.checked });
+      commit([{ op: 'member', m: patch }]);
     } else if (el.id === 'importFile' && el.files[0]) {
       el.files[0].text().then(txt => {
         const j = JSON.parse(txt);
         if (!j.fam || !Array.isArray(j.fam.members)) throw new Error('קובץ לא תקין');
-        Object.assign(cfg, j.cfg || {});
-        fam.members = j.fam.members; fam.logs = j.fam.logs || [];
-        saveCfg(); saveFam(); render();
+        commit([{ op: 'replace', members: j.fam.members, logs: j.fam.logs || [], cfg: Object.assign({}, cfg, j.cfg || {}) }]);
       }).catch(err => alert('ייבוא נכשל: ' + err.message));
     }
   });
@@ -411,5 +582,12 @@
   });
 
   // keep "now" fresh while the page stays open
-  setInterval(() => { if (wx && !document.querySelector('#family :focus')) render(); }, 5 * 60000);
+  setInterval(() => { if (wx && !typing()) render(); }, 5 * 60000);
+
+  // shared log: join via link, pull on start, every minute and when the app comes back to the foreground
+  const joined = readJoinLink();
+  if (joined && joined.u && joined.k) connect(joined.u, joined.k);
+  else syncNow();
+  setInterval(() => { if (document.visibilityState === 'visible') syncNow(); }, 60000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
 })();
