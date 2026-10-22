@@ -26,6 +26,7 @@
     heaterKw: 2.5,    // electric element power
     heaterEff: 1,     // how much of the element's nominal heat reaches usable water (learned)
     heaterMax: 60,    // electric element thermostat °C
+    tankMax: 70,      // the tank's over-temperature limit: the sun can't heat it beyond this
     perPerson: 40,    // default liters of shower-temperature water per shower
     morning: '07:00',
     evening: '19:00'
@@ -286,7 +287,8 @@
   // optical gain minus a loss that grows with (tank − air), so cold days deliver less for the same sun.
   function solarGain(T, h, hrs) {
     const q = cfg.area * (cfg.eff * (h.gti || 0) - cfg.ul * (T - (h.ta ?? tin()))); // W
-    return q > 0 ? q * 3600 * hrs / 1000 / (cfg.liters * CP) : 0; // thermosiphon stops when it would lose heat
+    if (q <= 0 || T >= cfg.tankMax) return 0; // thermosiphon stops when it would lose heat, or at the limit
+    return Math.min(q * 3600 * hrs / 1000 / (cfg.liters * CP), cfg.tankMax - T);
   }
 
   // One step [a, b) inside weather hour h: solar gain, electric element (up to its thermostat), cooling
@@ -294,10 +296,11 @@
     const hrs = (b - a) / HOUR;
     T += sun;
     const on = overlap(spans, a, b) / HOUR;
-    if (on > 0 && T < cfg.heaterMax) T = Math.min(cfg.heaterMax, T + cfg.heaterKw * cfg.heaterEff * 3600 * on / (cfg.liters * CP));
+    const stat = Math.min(cfg.heaterMax, cfg.tankMax);
+    if (on > 0 && T < stat) T = Math.min(stat, T + cfg.heaterKw * cfg.heaterEff * 3600 * on / (cfg.liters * CP));
     const ta = h.ta ?? tin();
     T = ta + (T - ta) * Math.exp(-hrs / cfg.tau);
-    return Math.min(T, 95);
+    return Math.min(T, cfg.tankMax);
   }
 
   // A logged shower also corrects the simulated state to match what was observed
@@ -396,7 +399,7 @@
       return { m, st };
     });
     const needT = tsh() + who.reduce((s, m) => s + drawOf(m), 0);
-    const target = Math.min(needT, Math.max(cfg.heaterMax, T0));
+    const target = Math.min(needT, Math.max(Math.min(cfg.heaterMax, cfg.tankMax), T0));
     const minutes = T0 >= needT ? 0 : Math.ceil((target - T0) * cfg.liters * CP / 3600 / (cfg.heaterKw * cfg.heaterEff) * 60);
     // how many of the list get a full hot shower once the tank is at `target`
     let Th = target, withHeater = 0;
@@ -613,6 +616,7 @@
         <label>הספק גוף חימום (kW)<input data-cfg="heaterKw" type="number" min="0.5" step="0.5" value="${cfg.heaterKw}"></label>
         <label>יעילות הדוד החשמלי (נלמד אוטומטית)<input data-cfg="heaterEff" type="number" min="0.3" max="2" step="0.05" value="${cfg.heaterEff}"></label>
         <label>טרמוסטט הדוד החשמלי (°C)<input data-cfg="heaterMax" type="number" step="1" value="${cfg.heaterMax}"></label>
+        <label>טמפ׳ מקסימלית של הדוד – ווסת (°C)<input data-cfg="tankMax" type="number" min="40" max="95" step="1" value="${cfg.tankMax}"></label>
         <label>ברירת מחדל לאדם (ליטר)<input data-cfg="perPerson" type="number" min="5" step="5" value="${cfg.perPerson}"></label>
         <label>שעת מקלחות בוקר<input data-cfg="morning" type="time" value="${cfg.morning}"></label>
         <label>שעת מקלחות ערב<input data-cfg="evening" type="time" value="${cfg.evening}"></label>
