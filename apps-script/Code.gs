@@ -21,6 +21,7 @@ const MAX_NEW_FAMILIES_PER_DAY = 50;
 const TABLES = {
   members: ['id', 'name', 'liters', 'n', 'skip_morning', 'skip_evening'],
   logs: ['id', 't', 'when', 'member_id', 'member_name', 'outcome', 'boiler'],
+  boilers: ['id', 't', 'when', 'minutes'],
   config: ['key', 'value']
 };
 
@@ -143,6 +144,15 @@ function applyOp_(st, o) {
     case 'delLog':
       st.logs = st.logs.filter(l => l.id !== o.id);
       break;
+    case 'boiler': {
+      const i = st.boilers.findIndex(b => b.id === o.b.id);
+      if (i >= 0) st.boilers[i] = Object.assign({}, st.boilers[i], o.b);
+      else st.boilers.push(Object.assign({ min: null }, o.b));
+      break;
+    }
+    case 'delBoiler':
+      st.boilers = st.boilers.filter(b => b.id !== o.id);
+      break;
     case 'cfg':
       Object.assign(st.cfg, o.cfg);
       break;
@@ -152,6 +162,7 @@ function applyOp_(st, o) {
     case 'replace':
       st.members = o.members || [];
       st.logs = o.logs || [];
+      st.boilers = o.boilers || [];
       st.cfg = o.cfg || {};
       break;
   }
@@ -172,11 +183,16 @@ function readState_(ss) {
     outcome: String(r.outcome),
     boiler: r.boiler === true
   }));
+  const boilers = rows_(ss, 'boilers').map(r => ({
+    id: String(r.id),
+    t: Number(r.t),
+    min: r.minutes === '' ? null : Number(r.minutes)
+  }));
   const cfg = {};
   rows_(ss, 'config').forEach(r => {
     try { cfg[r.key] = typeof r.value === 'string' ? JSON.parse(r.value) : r.value; } catch (e) { cfg[r.key] = r.value; }
   });
-  return { members, logs, cfg };
+  return { members, logs, boilers, cfg };
 }
 
 function writeState_(ss, st) {
@@ -186,6 +202,8 @@ function writeState_(ss, st) {
     !!(m.skip && m.skip.morning), !!(m.skip && m.skip.evening)]));
   write_(ss, 'logs', st.logs.slice().sort((a, b) => a.t - b.t).map(l => [l.id, l.t, new Date(l.t), l.member,
     names[l.member] || '', l.outcome, !!l.boiler]));
+  write_(ss, 'boilers', st.boilers.slice().sort((a, b) => a.t - b.t).map(b => [b.id, b.t, new Date(b.t),
+    b.min == null ? '' : b.min]));
   write_(ss, 'config', Object.keys(st.cfg).map(k => [k, JSON.stringify(st.cfg[k])]));
 }
 
@@ -197,10 +215,10 @@ function sheet_(ss, name) {
     sh.setFrozenRows(1);
     // ids and JSON must stay text (e.g. "12e4" would otherwise become a number)
     sh.getRange('A:B').setNumberFormat('@');
-    if (name === 'logs') {
+    if (name === 'logs' || name === 'boilers') {
       sh.getRange('B:B').setNumberFormat('0');
       sh.getRange('C:C').setNumberFormat('yyyy-mm-dd hh:mm');
-      sh.getRange('D:D').setNumberFormat('@');
+      if (name === 'logs') sh.getRange('D:D').setNumberFormat('@');
     }
   }
   return sh;
