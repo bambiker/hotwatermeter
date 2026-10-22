@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>מד מים חמים</title>
+<meta name="description" content="ציון יומי לקרינת השמש (Open-Meteo) – היום מול אתמול – להערכת חימום הדוד">
+<style>
+  :root {
+    --bg: #f7f6f3;
+    --surface: #ffffff;
+    --ink: #1d1d1f;
+    --ink-2: #55555c;
+    --ink-3: #8a8a92;
+    --line: #e4e2dd;
+    --sun: #e08a00;
+    --sun-soft: #f3c77a;
+    --clear: #9a9aa2;
+    --good: #2e7d32;
+    --mid: #b26a00;
+    --bad: #c62828;
+    --accent: #1f5fbf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141416; --surface: #1d1d20; --ink: #f2f2f4; --ink-2: #b5b5bc; --ink-3: #85858d;
+      --line: #313136; --sun: #f5a524; --sun-soft: #7a5a22; --clear: #7c7c85;
+      --good: #66bb6a; --mid: #f0a040; --bad: #ef6b6b; --accent: #6ea2f0;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141416; --surface: #1d1d20; --ink: #f2f2f4; --ink-2: #b5b5bc; --ink-3: #85858d;
+    --line: #313136; --sun: #f5a524; --sun-soft: #7a5a22; --clear: #7c7c85;
+    --good: #66bb6a; --mid: #f0a040; --bad: #ef6b6b; --accent: #6ea2f0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif; line-height: 1.5;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  .sub { color: var(--ink-2); margin: 0 0 20px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .loc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+  .loc .place { font-weight: 600; margin-inline-end: auto; }
+  input, button, select {
+    font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--ink-3); }
+  #results { display: flex; flex-direction: column; gap: 4px; }
+  #results button { text-align: start; }
+  .days { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .days { grid-template-columns: 1fr; } }
+  .day h2 { font-size: 1.1rem; margin: 0; }
+  .day .date { color: var(--ink-3); font-size: .9rem; }
+  .score { display: flex; align-items: baseline; gap: 10px; margin: 12px 0 4px; }
+  .score .num { font-size: 3.2rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .score .of { color: var(--ink-3); }
+  .badge { font-size: .85rem; font-weight: 600; padding: 2px 10px; border-radius: 999px; border: 1px solid currentColor; }
+  .badge.good { color: var(--good); } .badge.mid { color: var(--mid); } .badge.bad { color: var(--bad); }
+  .note { color: var(--ink-2); font-size: .85rem; margin: 0 0 10px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
+  .stat .k { color: var(--ink-3); font-size: .8rem; }
+  .stat .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .chart { position: relative; }
+  .chart svg { width: 100%; height: auto; display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .8rem; color: var(--ink-2); margin-top: 6px; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-inline-end: 4px; }
+  .tip {
+    position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 8px; font-size: .8rem; box-shadow: 0 4px 14px rgba(0,0,0,.12);
+    white-space: nowrap; display: none; z-index: 2;
+  }
+  .compare { margin-top: 16px; }
+  .compare strong { font-variant-numeric: tabular-nums; }
+  details.tank { margin-top: 16px; }
+  details.tank summary { cursor: pointer; font-weight: 600; }
+  .grid-inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 12px 0; }
+  .grid-inputs label { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; color: var(--ink-2); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: start; }
+  th { color: var(--ink-3); font-weight: 500; font-size: .85rem; }
+  .err { color: var(--bad); }
+  footer { color: var(--ink-3); font-size: .8rem; margin-top: 24px; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>☀️ מד מים חמים</h1>
+  <p class="sub">כמה שמש הייתה היום? ציון יומי לפי קרינת השמש בפועל (כולל השפעת העננים) לעומת יום בהיר לגמרי – והשוואה לאתמול.</p>
+
+  <div class="card loc">
+    <span class="place" id="place">…</span>
+    <button id="geo" type="button">📍 המיקום שלי</button>
+    <input id="q" type="search" placeholder="חיפוש עיר…" aria-label="חיפוש עיר">
+    <button id="search" type="button">חפש</button>
+    <div id="results" style="flex-basis:100%"></div>
+  </div>
+
+  <div id="status" class="note"></div>
+  <div class="days" id="days"></div>
+
+  <div class="card compare" id="compare" hidden></div>
+
+  <details class="card tank" id="tank">
+    <summary>🛢️ הערכת חימום הדוד (לכיול)</summary>
+    <p class="note">הערכה גסה: אנרגיית השמש × שטח הקולטים × נצילות ÷ (נפח הדוד × חום סגולי של מים). את מקדם הנצילות מכיילים לפי מה שמודדים בפועל בדוד.</p>
+    <div class="grid-inputs">
+      <label>נפח הדוד (ליטר)<input id="liters" type="number" min="30" step="10" value="150"></label>
+      <label>שטח קולטים (מ״ר)<input id="area" type="number" min="0.5" step="0.1" value="2"></label>
+      <label>נצילות / מקדם כיול (0–1)<input id="eff" type="number" min="0.05" max="1" step="0.05" value="0.45"></label>
+      <label>טמפ׳ מים נכנסים (°C)<input id="tin" type="number" step="1" value="20"></label>
+      <label>טמפ׳ "מספיק חם" (°C)<input id="tok" type="number" step="1" value="45"></label>
+    </div>
+    <table>
+      <thead><tr><th></th><th>אנרגיה לקולט (kWh)</th><th>חימום (°C)</th><th>טמפ׳ משוערת</th><th>מספיק?</th></tr></thead>
+      <tbody id="tankBody"></tbody>
+    </table>
+  </details>
+
+  <footer>
+    נתונים: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (shortwave_radiation – קרינה גלובלית על משטח אופקי, ממוצע שעתי).
+    ה"יום הבהיר" מחושב לפי מודל Haurwitz ממיקום השמש. שעות היום שעוד לא עברו הן תחזית.
+  </footer>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+  };
+
+  let loc = store.get('hwm.loc', { name: 'תל אביב', lat: 32.0853, lon: 34.7818 });
+  let lastDays = null;
+
+  // ---------- Sun geometry & clear-sky model ----------
+  const rad = Math.PI / 180;
+  // cos(solar zenith) at a UTC Date for lat/lon (NOAA approximation)
+  function cosZenith(date, lat, lon) {
+    const start = Date.UTC(date.getUTCFullYear(), 0, 1);
+    const doy = (date - start) / 86400000; // fractional day of year (0-based)
+    const g = 2 * Math.PI / 365 * doy;
+    const decl = 0.006918 - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g)
+      - 0.006758 * Math.cos(2 * g) + 0.000907 * Math.sin(2 * g)
+      - 0.002697 * Math.cos(3 * g) + 0.00148 * Math.sin(3 * g);
+    const eqt = 229.18 * (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g)
+      - 0.014615 * Math.cos(2 * g) - 0.040849 * Math.sin(2 * g)); // minutes
+    const utcMin = date.getUTCHours() * 60 + date.getUTCMinutes() + date.getUTCSeconds() / 60;
+    const solarMin = utcMin + eqt + 4 * lon;
+    const ha = (solarMin / 4 - 180) * rad;
+    const phi = lat * rad;
+    return Math.sin(phi) * Math.sin(decl) + Math.cos(phi) * Math.cos(decl) * Math.cos(ha);
+  }
+  // Haurwitz clear-sky global horizontal irradiance (W/m²)
+  function clearSkyGHI(date, lat, lon) {
+    const cz = cosZenith(date, lat, lon);
+    return cz > 0.01 ? 1098 * cz * Math.exp(-0.057 / cz) : 0;
+  }
+  // Open-Meteo radiation is the mean over the preceding hour → average 12 samples in that hour
+  function clearSkyHourMean(endUtcMs, lat, lon) {
+    let s = 0;
+    for (let i = 0; i < 12; i++) s += clearSkyGHI(new Date(endUtcMs - (i * 5 + 2.5) * 60000), lat, lon);
+    return s / 12;
+  }
+
+  // ---------- Scoring ----------
+  function rating(score) {
+    if (score >= 85) return { t: 'שמשי מאוד', c: 'good' };
+    if (score >= 65) return { t: 'טוב', c: 'good' };
+    if (score >= 40) return { t: 'בינוני', c: 'mid' };
+    if (score >= 20) return { t: 'מעונן', c: 'bad' };
+    return { t: 'כמעט בלי שמש', c: 'bad' };
+  }
+
+  // ---------- Data ----------
+  async function load() {
+    $('place').textContent = '📍 ' + loc.name;
+    $('status').textContent = 'טוען נתונים…';
+    $('status').classList.remove('err');
+    const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + loc.lat + '&longitude=' + loc.lon +
+      '&hourly=shortwave_radiation,cloud_cover&past_days=1&forecast_days=1&timezone=auto';
+    try {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      render(data);
+      $('status').textContent = '';
+    } catch (e) {
+      $('status').textContent = 'שגיאה בטעינת הנתונים: ' + e.message;
+      $('status').classList.add('err');
+    }
+  }
+
+  function buildDays(data) {
+    const off = data.utc_offset_seconds * 1000;
+    const nowUtc = Date.now();
+    const h = data.hourly;
+    const byDate = new Map();
+    h.time.forEach((t, i) => {
+      // t is local wall time "YYYY-MM-DDTHH:MM"; convert to a UTC instant
+      const endUtc = Date.parse(t + ':00Z') - off;
+      const date = t.slice(0, 10);
+      if (!byDate.has(date)) byDate.set(date, []);
+      byDate.get(date).push({
+        hour: +t.slice(11, 13),
+        ghi: h.shortwave_radiation[i] ?? 0,
+        cloud: h.cloud_cover[i],
+        clear: clearSkyHourMean(endUtc, data.latitude, data.longitude),
+        future: endUtc > nowUtc
+      });
+    });
+    const dates = [...byDate.keys()].sort();
+    return dates.slice(-2).map((date, idx) => {
+      const hours = byDate.get(date);
+      const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
+      const actual = sum(hours, x => x.ghi) / 1000;     // kWh/m²
+      const clear = sum(hours, x => x.clear) / 1000;
+      const past = hours.filter(x => !x.future);
+      const actualSoFar = sum(past, x => x.ghi) / 1000;
+      const clearSoFar = sum(past, x => x.clear) / 1000;
+      const daylight = hours.filter(x => x.clear > 20);
+      const cloudAvg = daylight.length ? sum(daylight, x => x.cloud ?? 0) / daylight.length : null;
+      return {
+        date, hours, label: idx === 1 ? 'היום' : 'אתמול',
+        actual, clear, actualSoFar, clearSoFar,
+        score: clear > 0 ? Math.min(100, Math.round(actual / clear * 100)) : 0,
+        scoreSoFar: clearSoFar > 0 ? Math.min(100, Math.round(actualSoFar / clearSoFar * 100)) : null,
+        partial: hours.some(x => x.future),
+        cloudAvg
+      };
+    });
+  }
+
+  // ---------- Rendering ----------
+  const fmt = (n, d = 1) => n.toLocaleString('he-IL', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const ltr = (x) => `<span dir="ltr">${x}</span>`;
+  const fmtDate = (s) => new Date(s + 'T12:00:00Z').toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'numeric', timeZone: 'UTC' });
+
+  function render(data) {
+    const days = buildDays(data);
+    lastDays = days;
+    const yMax = Math.max(...days.flatMap(d => d.hours.map(x => Math.max(x.ghi, x.clear))), 100);
+    $('days').innerHTML = '';
+    // yesterday first in reading order (RTL: appears on the right)
+    days.forEach(d => $('days').appendChild(dayCard(d, yMax)));
+    renderCompare(days);
+    renderTank();
+  }
+
+  function dayCard(d, yMax) {
+    const r = rating(d.score);
+    const el = document.createElement('section');
+    el.className = 'card day';
+    el.innerHTML = `
+      <h2>${d.label}</h2>
+      <div class="date">${fmtDate(d.date)}</div>
+      <div class="score"><span class="num">${d.score}</span><span class="of">/ 100</span>
+        <span class="badge ${r.c}">${r.t}</span></div>
+      ${d.partial ? `<p class="note">כולל תחזית לשעות שנותרו. עד עכשיו: ${d.scoreSoFar ?? '–'}/100 (${ltr(fmt(d.actualSoFar, 2) + ' kWh/m²')})</p>` : '<p class="note">יום שלם (נתונים בפועל)</p>'}
+      <div class="stats">
+        <div class="stat"><div class="k">קרינה ביום</div><div class="v">${ltr(fmt(d.actual, 2) + ' kWh/m²')}</div></div>
+        <div class="stat"><div class="k">ביום בהיר</div><div class="v">${ltr(fmt(d.clear, 2) + ' kWh/m²')}</div></div>
+        <div class="stat"><div class="k">עננות ממוצעת</div><div class="v">${d.cloudAvg == null ? '–' : Math.round(d.cloudAvg) + '%'}</div></div>
+      </div>
+      <div class="chart"></div>
+      <div class="legend">
+        <span><i style="background:var(--sun)"></i>קרינה בפועל (W/m²)</span>
+        <span><i style="background:var(--sun-soft)"></i>תחזית</span>
+        <span><i style="background:none;border-top:2px dashed var(--clear);border-radius:0;height:0"></i>יום בהיר</span>
+      </div>`;
+    drawChart(el.querySelector('.chart'), d, yMax);
+    return el;
+  }
+
+  function drawChart(host, d, yMax) {
+    const W = 440, H = 200, padL = 34, padR = 8, padT = 10, padB = 22;
+    const hours = d.hours;
+    const n = hours.length;
+    const bw = (W - padL - padR) / n;
+    const y = v => padT + (H - padT - padB) * (1 - v / yMax);
+    // SVG is drawn LTR (time flows left→right like a clock axis)
+    let s = `<svg viewBox="0 0 ${W} ${H}" direction="ltr" role="img" aria-label="קרינה שעתית ${d.label}">`;
+    const step = yMax > 800 ? 250 : 200;
+    for (let v = 0; v <= yMax; v += step) {
+      s += `<line x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="1"/>`;
+      s += `<text x="${padL - 4}" y="${y(v) + 4}" font-size="10" text-anchor="end" fill="var(--ink-3)">${v}</text>`;
+    }
+    hours.forEach((x, i) => {
+      if (x.ghi <= 0) return;
+      const bx = padL + i * bw + 1, w = Math.max(bw - 2, 1), top = y(x.ghi), bh = y(0) - top;
+      const r = Math.min(3, w / 2, bh);
+      // rounded top, square base
+      s += `<path d="M${bx},${y(0)} V${top + r} Q${bx},${top} ${bx + r},${top} H${bx + w - r} Q${bx + w},${top} ${bx + w},${top + r} V${y(0)} Z" fill="${x.future ? 'var(--sun-soft)' : 'var(--sun)'}"/>`;
+    });
+    const pts = hours.map((x, i) => `${padL + (i + 0.5) * bw},${y(x.clear)}`).join(' ');
+    s += `<polyline points="${pts}" fill="none" stroke="var(--clear)" stroke-width="2" stroke-dasharray="4 3"/>`;
+    for (let i = 0; i < n; i += 3) {
+      s += `<text x="${padL + (i + 0.5) * bw}" y="${H - 6}" font-size="10" text-anchor="middle" fill="var(--ink-3)">${String(hours[i].hour).padStart(2, '0')}</text>`;
+    }
+    s += `<line class="cross" y1="${padT}" y2="${y(0)}" stroke="var(--ink-3)" stroke-width="1" visibility="hidden"/>`;
+    s += `<rect class="hit" x="${padL}" y="0" width="${W - padL - padR}" height="${H}" fill="transparent"/></svg><div class="tip"></div>`;
+    host.innerHTML = s;
+
+    const svg = host.querySelector('svg'), tip = host.querySelector('.tip'), cross = host.querySelector('.cross');
+    const move = (ev) => {
+      const p = svg.createSVGPoint(); p.x = ev.clientX; p.y = ev.clientY;
+      const sp = p.matrixTransform(svg.getScreenCTM().inverse());
+      const i = Math.max(0, Math.min(n - 1, Math.floor((sp.x - padL) / bw)));
+      const x = hours[i];
+      const cx = padL + (i + 0.5) * bw;
+      cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.setAttribute('visibility', 'visible');
+      const startH = String((x.hour + 23) % 24).padStart(2, '0'), endH = String(x.hour).padStart(2, '0');
+      tip.innerHTML = `<b>${ltr(startH + ':00–' + endH + ':00')}</b>${x.future ? ' (תחזית)' : ''}<br>קרינה: ${ltr(Math.round(x.ghi) + ' W/m²')}<br>יום בהיר: ${ltr(Math.round(x.clear) + ' W/m²')}<br>עננות: ${x.cloud ?? '–'}%`;
+      tip.style.display = 'block';
+      const box = host.getBoundingClientRect();
+      let left = ev.clientX - box.left + 12;
+      if (left + tip.offsetWidth > box.width) left = ev.clientX - box.left - tip.offsetWidth - 12;
+      tip.style.left = Math.max(0, left) + 'px';
+      tip.style.top = Math.max(0, ev.clientY - box.top - tip.offsetHeight - 8) + 'px';
+    };
+    const leave = () => { tip.style.display = 'none'; cross.setAttribute('visibility', 'hidden'); };
+    svg.addEventListener('pointermove', move);
+    svg.addEventListener('pointerdown', move);
+    svg.addEventListener('pointerleave', leave);
+  }
+
+  function renderCompare(days) {
+    if (days.length < 2) { $('compare').hidden = true; return; }
+    const [y, t] = days;
+    const diff = t.score - y.score;
+    const pct = y.actual > 0 ? Math.round((t.actual / y.actual - 1) * 100) : null;
+    const word = diff > 3 ? 'שמשי יותר' : diff < -3 ? 'פחות שמשי' : 'דומה';
+    $('compare').hidden = false;
+    $('compare').innerHTML = `<b>היום לעומת אתמול:</b> ${word} – ציון <strong>${t.score}</strong> מול <strong>${y.score}</strong>
+      (${ltr((diff >= 0 ? '+' : '') + diff)} נק׳)${pct != null ? `, אנרגיה ${ltr((pct >= 0 ? '+' : '') + pct + '%')}` : ''}${t.partial ? ' <span class="note">(היום כולל תחזית לשעות שנותרו)</span>' : ''}`;
+  }
+
+  // ---------- Tank estimate ----------
+  const tankFields = ['liters', 'area', 'eff', 'tin', 'tok'];
+  const savedTank = store.get('hwm.tank', null);
+  if (savedTank) tankFields.forEach(k => { if (savedTank[k] != null) $(k).value = savedTank[k]; });
+  if (store.get('hwm.tankOpen', false)) $('tank').open = true;
+  $('tank').addEventListener('toggle', () => store.set('hwm.tankOpen', $('tank').open));
+  tankFields.forEach(k => $(k).addEventListener('input', () => {
+    store.set('hwm.tank', Object.fromEntries(tankFields.map(f => [f, +$(f).value])));
+    renderTank();
+  }));
+
+  function renderTank() {
+    if (!lastDays) return;
+    const L = +$('liters').value, A = +$('area').value, eff = +$('eff').value, tin = +$('tin').value, tok = +$('tok').value;
+    $('tankBody').innerHTML = lastDays.map(d => {
+      const kWh = d.actual * A * eff;
+      const dT = L > 0 ? kWh * 3600 / (L * 4.186) : 0; // kJ / (kg · kJ/kg°C)
+      const T = Math.min(tin + dT, 95);
+      const ok = T >= tok;
+      return `<tr><td><b>${d.label}</b></td><td>${fmt(kWh, 2)}</td><td>${ltr('+' + fmt(dT, 0))}</td><td>${fmt(T, 0)}°C</td>
+        <td>${ok ? '✅ כן' : '❌ לא'}</td></tr>`;
+    }).join('');
+  }
+
+  // ---------- Location ----------
+  function setLoc(l) { loc = l; store.set('hwm.loc', l); $('results').innerHTML = ''; load(); }
+
+  $('geo').addEventListener('click', () => {
+    if (!navigator.geolocation) { $('status').textContent = 'הדפדפן לא תומך במיקום'; return; }
+    navigator.geolocation.getCurrentPosition(
+      p => setLoc({ name: 'המיקום שלי', lat: +p.coords.latitude.toFixed(4), lon: +p.coords.longitude.toFixed(4) }),
+      e => { $('status').textContent = 'לא ניתן לקבל מיקום: ' + e.message; }
+    );
+  });
+
+  async function search() {
+    const q = $('q').value.trim();
+    if (!q) return;
+    $('results').textContent = 'מחפש…';
+    try {
+      const r = await fetch('https://geocoding-api.open-meteo.com/v1/search?count=6&language=he&name=' + encodeURIComponent(q));
+      const j = await r.json();
+      const list = j.results || [];
+      $('results').innerHTML = list.length ? '' : 'לא נמצאו תוצאות';
+      list.forEach(c => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = [c.name, c.admin1, c.country].filter(Boolean).join(', ');
+        b.onclick = () => setLoc({ name: c.name, lat: c.latitude, lon: c.longitude });
+        $('results').appendChild(b);
+      });
+    } catch (e) { $('results').textContent = 'שגיאה בחיפוש: ' + e.message; }
+  }
+  $('search').addEventListener('click', search);
+  $('q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+
+  load();
+})();
+</script>
+</body>
+</html>
