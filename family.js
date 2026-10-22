@@ -25,21 +25,24 @@
     tau: 40,          // tank cooling time constant, hours
     heaterKw: 2.5,    // electric element power
     heaterEff: 1,     // how much of the element's nominal heat reaches usable water (learned)
-    heaterMax: 60,    // electric element thermostat °C
-    tankMax: 70,      // the tank's over-temperature limit: the sun can't heat it beyond this
+    heaterMax: 65,    // electric element thermostat °C (Israeli practice: 65; factory default often 70)
+    tankMax: 80,      // highest the sun can take the tank (no solar limiter: ~80 on a hot idle day)
     perPerson: 40,    // default liters of shower-temperature water per shower
     morning: '07:00',
     evening: '19:00'
   };
   // Settings migrations. 2: tilted-collector irradiance with temperature-dependent losses, so
   // calibration learned under the old horizontal model starts again. 3: seasonal shower temperature.
-  const MODEL = 3;
-  const migration = (from) => Object.assign({},
+  // 4: new temperature limits (thermostat 65, sun 80), applied only where the old defaults were kept.
+  const MODEL = 4;
+  const migration = (from, cur) => Object.assign({},
     (from ?? 0) < 2 ? { eff: DEFAULTS.eff, tin: null } : {},
     (from ?? 0) < 3 ? { tshower: null } : {},
+    (from ?? 0) < 4 && (cur.heaterMax == null || cur.heaterMax === 60) ? { heaterMax: DEFAULTS.heaterMax } : {},
+    (from ?? 0) < 4 && (cur.tankMax == null || cur.tankMax === 70) ? { tankMax: DEFAULTS.tankMax } : {},
     { model: MODEL });
   const saved = store.get('hwm.tank', {});
-  if (saved.model !== MODEL) Object.assign(saved, migration(saved.model));
+  if (saved.model !== MODEL) Object.assign(saved, migration(saved.model, saved));
   const cfg = Object.assign({}, DEFAULTS, { model: MODEL });
   Object.keys(DEFAULTS).forEach(k => { if (saved[k] != null && saved[k] !== '') cfg[k] = saved[k]; });
   const fam = Object.assign({ members: [], logs: [], boilers: [] }, store.get('hwm.family', {}));
@@ -129,7 +132,7 @@
     sync.outbox.forEach(applyOp);
     saveLocal();
     if (cfg.model !== MODEL && !sync.outbox.some(o => o.op === 'cfg' && o.cfg.model === MODEL)) {
-      const m = migration(cfg.model);
+      const m = migration(cfg.model, cfg);
       sync.outbox.push({ op: 'cfg', cfg: m });
       applyOp({ op: 'cfg', cfg: m });
       store.set('hwm.outbox', sync.outbox);
