@@ -1,5 +1,6 @@
 // Family hot-water planner: tank simulation, shower log and per-person learning.
-// Listens for 'hwm:weather' (raw Open-Meteo response) dispatched by index.html.
+// Listens for 'hwm:weather' (raw Open-Meteo response) dispatched by index.html, and reads
+// window.HWM.weather on start in case the first one fired before this file loaded.
 (() => {
   const $ = (id) => document.getElementById(id);
   const store = {
@@ -381,7 +382,17 @@
     </div>`;
   }
 
+  // A rendering bug should show up as a message, not as a silently missing section
   function render() {
+    try {
+      renderSection();
+    } catch (err) {
+      console.error(err);
+      $('family').innerHTML = `<p class="card fam err">שגיאה בהצגת מצב הדוד: ${esc(err.message)}</p>`;
+    }
+  }
+
+  function renderSection() {
     const root = $('family');
     $('locHome').appendChild($('locCard')); // take it out before the section is rebuilt
     if (!wx) { root.innerHTML = ''; placeHome(); return; }
@@ -717,8 +728,7 @@
     }
   });
 
-  document.addEventListener('hwm:weather', (e) => {
-    const d = e.detail;
+  function onWeather(d) {
     const off = d.utc_offset_seconds * 1000;
     wx = {
       off,
@@ -728,7 +738,9 @@
       })
     };
     render();
-  });
+  }
+  document.addEventListener('hwm:weather', (e) => onWeather(e.detail));
+  if (window.HWM && HWM.weather) onWeather(HWM.weather);
 
   // keep "now" fresh while the page stays open
   setInterval(() => { if (wx && !typing()) render(); }, 5 * 60000);
