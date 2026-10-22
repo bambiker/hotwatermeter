@@ -318,6 +318,8 @@
   }
 
   const heatOf = (d) => window.HWM.heat ? window.HWM.heat(d.date) : null;
+  // the sun can still add heat today (false after sunset: the day's number is final)
+  const sunAhead = (h) => !!h && h.gain - h.gainSoFar >= 0.5;
 
   function dayCard(d, yMax) {
     const h = heatOf(d);
@@ -330,7 +332,7 @@
       <div class="score"><span class="num">${h ? ltr('+' + Math.round(h.gain) + '°') : '…'}</span>
         ${h ? `<span class="badge ${r.c}">${r.t}</span>` : ''}</div>
       <p class="note">${h ? `כמה הדוד התחמם מהשמש · ציון ${ltr(h.score + '/100')} ביחס ליום הכי טוב בשנה` : 'מחשב את חימום הדוד…'}</p>
-      ${d.partial ? `<p class="note">כולל תחזית לשעות שנותרו${h ? ` – עד עכשיו ${ltr('+' + Math.round(h.gainSoFar) + '°')}` : ''}</p>` : ''}
+      ${sunAhead(h) ? `<p class="note">כולל תחזית לשעות השמש שנותרו${h.gainSoFar >= 0.5 ? ` – עד עכשיו ${ltr('+' + Math.round(h.gainSoFar) + '°')}` : ''}</p>` : ''}
       <div class="stats">
         <div class="stat"><div class="k">קרינה על הקולטים</div><div class="v">${ltr(fmt(d.actual, 2) + ' kWh/m²')}</div></div>
         <div class="stat"><div class="k">ביום בהיר</div><div class="v">${ltr(fmt(d.clear, 2) + ' kWh/m²')}</div></div>
@@ -405,7 +407,7 @@
     const word = diff >= 2 ? 'הדוד מתחמם יותר' : diff <= -2 ? 'הדוד מתחמם פחות' : 'חימום דומה';
     $('compare').hidden = false;
     $('compare').innerHTML = `<b>היום לעומת אתמול:</b> ${word} – ${ltr('+' + Math.round(t.gain) + '°')} מול ${ltr('+' + Math.round(y.gain) + '°')}
-      (${ltr((diff >= 0 ? '+' : '') + diff + '°')})${days[1].partial ? ' <span class="note">(היום כולל תחזית לשעות שנותרו)</span>' : ''}`;
+      (${ltr((diff >= 0 ? '+' : '') + diff + '°')})${sunAhead(t) ? ' <span class="note">(היום כולל תחזית לשעות השמש שנותרו)</span>' : ''}`;
   }
 
   // ---------- Location ----------
