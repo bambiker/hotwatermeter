@@ -106,6 +106,8 @@
   .tank-now { display: flex; gap: 32px; flex-wrap: wrap; margin-bottom: 8px; }
   .tank-now .k { color: var(--ink-3); font-size: .8rem; }
   .tank-now .big { font-size: 2.6rem; font-weight: 700; line-height: 1.1; color: var(--hot); font-variant-numeric: tabular-nums; }
+  .showers .k { color: var(--ink-3); font-size: .8rem; }
+  .showers .big2.good { color: var(--good); } .showers .big2.mid { color: var(--mid); } .showers .big2.bad { color: var(--bad); }
   .tank-now .drop { align-self: end; max-width: 260px; margin: 0 0 6px; }
   .tank-now .big2 { font-size: 1.6rem; font-weight: 700; line-height: 1.3; font-variant-numeric: tabular-nums; }
   .slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 14px; }
@@ -226,13 +228,20 @@
   // Collector orientation lives in the tank settings (family.js stores them in hwm.tank)
   const panel = () => { const c = store.get('hwm.tank', {}); return { tilt: c.tilt ?? 45, az: c.azimuth ?? 0 }; };
 
-  // ---------- Scoring ----------
-  // score: the day's solar heating of the tank vs. the best day of the year (computed by family.js)
+  // ---------- Solar heating index (the same for everyone at a place, whatever their tank) ----------
+  // A standard flat-plate collector, 45° facing south, heating water to 50°C: per hour it delivers
+  // max(0, η0·G − UL·(50 − air)). Cold air and weak sun can make that zero even with some sunshine.
+  const STD = { tilt: 45, az: 0, eta0: 0.7, ul: 5, water: 50 };
+  const useful = (G, ta) => Math.max(0, STD.eta0 * G - STD.ul * (STD.water - ta)); // W/m²
+  // 100 = the best clear day in the world for that collector (high, dry desert ≈ 5.5 kWh/m² of useful heat).
+  // In Israel clear days score about 45 (winter) to 68 (spring/autumn).
+  const WORLD_BEST = 5.5;
+  const indexOf = (kwh) => Math.min(100, Math.round(kwh / WORLD_BEST * 100));
   function rating(score) {
-    if (score >= 80) return { t: 'מחמם מצוין', c: 'good' };
-    if (score >= 60) return { t: 'מחמם טוב', c: 'good' };
-    if (score >= 35) return { t: 'מחמם חלקית', c: 'mid' };
-    if (score >= 15) return { t: 'מחמם מעט', c: 'bad' };
+    if (score >= 55) return { t: 'מחמם מצוין', c: 'good' };
+    if (score >= 40) return { t: 'מחמם טוב', c: 'good' };
+    if (score >= 20) return { t: 'מחמם חלקית', c: 'mid' };
+    if (score >= 5) return { t: 'מחמם מעט', c: 'bad' };
     return { t: 'כמעט לא מחמם', c: 'bad' };
   }
 
@@ -242,13 +251,16 @@
     $('place').textContent = '📍 ' + loc.name;
     $('status').textContent = 'טוען נתונים…';
     $('status').classList.remove('err');
-    const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + loc.lat + '&longitude=' + loc.lon +
-      '&hourly=global_tilted_irradiance,shortwave_radiation,cloud_cover,temperature_2m&tilt=' + panel().tilt + '&azimuth=' + panel().az +
+    const url = (tilt, az) => 'https://api.open-meteo.com/v1/forecast?latitude=' + loc.lat + '&longitude=' + loc.lon +
+      '&hourly=global_tilted_irradiance,shortwave_radiation,cloud_cover,temperature_2m&tilt=' + tilt + '&azimuth=' + az +
       '&past_days=3&forecast_days=2&timezone=auto';
+    const get = async (u) => { const r = await fetch(u); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
     try {
-      const r = await fetch(url);
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
+      // the index uses the standard collector; the tank model needs the family's own orientation
+      const { tilt, az } = panel();
+      const [data, own] = await Promise.all([get(url(STD.tilt, STD.az)),
+        tilt === STD.tilt && az === STD.az ? null : get(url(tilt, az))]);
+      data.hourly.tank_gti = (own || data).hourly.global_tilted_irradiance;
       render(data);
       $('status').textContent = '';
     } catch (e) {
@@ -261,7 +273,6 @@
     const off = data.utc_offset_seconds * 1000;
     const nowUtc = Date.now();
     const h = data.hourly;
-    const { tilt, az } = panel();
     const byDate = new Map();
     h.time.forEach((t, i) => {
       // t is local wall time "YYYY-MM-DDTHH:MM"; convert to a UTC instant
@@ -270,9 +281,10 @@
       if (!byDate.has(date)) byDate.set(date, []);
       byDate.get(date).push({
         hour: +t.slice(11, 13),
-        gti: (h.global_tilted_irradiance || h.shortwave_radiation)[i] ?? 0, // on the collector
+        gti: (h.global_tilted_irradiance || h.shortwave_radiation)[i] ?? 0, // on the standard collector
+        ta: h.temperature_2m[i] ?? 20,
         cloud: h.cloud_cover[i],
-        clear: clearSkyHourMean(endUtc, data.latitude, data.longitude, tilt, az),
+        clear: clearSkyHourMean(endUtc, data.latitude, data.longitude, STD.tilt, STD.az),
         future: endUtc > nowUtc
       });
     });
@@ -283,13 +295,15 @@
       const hours = byDate.get(date);
       const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
       const actual = sum(hours, x => x.gti) / 1000;     // kWh/m² on the collector
-      const clear = sum(hours, x => x.clear) / 1000;
+      const heat = sum(hours, x => useful(x.gti, x.ta)) / 1000; // kWh/m² of useful heat
+      const heatSoFar = sum(hours.filter(x => !x.future), x => useful(x.gti, x.ta)) / 1000;
+      const clearHeat = sum(hours, x => useful(x.clear, x.ta)) / 1000;
       const daylight = hours.filter(x => x.clear > 20);
       const cloudAvg = daylight.length ? sum(daylight, x => x.cloud ?? 0) / daylight.length : null;
       return {
         date, hours, label: date === today ? 'היום' : 'אתמול',
-        actual, clear,
-        partial: hours.some(x => x.future),
+        actual, heat, heatSoFar, clearHeat,
+        score: indexOf(heat), scoreSoFar: indexOf(heatSoFar), clearScore: indexOf(clearHeat),
         cloudAvg
       };
     });
@@ -307,7 +321,6 @@
     document.dispatchEvent(new CustomEvent('hwm:weather', { detail: data }));
   }
 
-  // Also called by family.js once it has simulated the tank (the heating numbers come from there)
   function renderDays(data) {
     const days = buildDays(data);
     const yMax = Math.max(...days.flatMap(d => d.hours.map(x => Math.max(x.gti, x.clear))), 100);
@@ -317,30 +330,29 @@
     renderCompare(days);
   }
 
-  const heatOf = (d) => window.HWM.heat ? window.HWM.heat(d.date) : null;
   // the sun can still add heat today (false after sunset: the day's number is final)
-  const sunAhead = (h) => !!h && h.gain - h.gainSoFar >= 0.5;
+  const sunAhead = (d) => d.heat - d.heatSoFar >= 0.02;
 
   function dayCard(d, yMax) {
-    const h = heatOf(d);
-    const r = h && rating(h.score);
+    const r = rating(d.score);
     const el = document.createElement('section');
     el.className = 'card day ' + (d.label === 'היום' ? 'today' : 'yesterday');
     el.innerHTML = `
       <h2>${d.label}</h2>
       <div class="date">${fmtDate(d.date)}</div>
-      <div class="score"><span class="num">${h ? ltr('+' + Math.round(h.gain) + '°') : '…'}</span>
-        ${h ? `<span class="badge ${r.c}">${r.t}</span>` : ''}</div>
-      <p class="note">${h ? `כמה הדוד התחמם מהשמש · ציון ${ltr(h.score + '/100')} ביחס ליום הכי טוב בשנה` : 'מחשב את חימום הדוד…'}</p>
-      ${sunAhead(h) ? `<p class="note">כולל תחזית לשעות השמש שנותרו${h.gainSoFar >= 0.5 ? ` – עד עכשיו ${ltr('+' + Math.round(h.gainSoFar) + '°')}` : ''}</p>` : ''}
+      <div class="score"><span class="num">${d.score}</span><span class="of">/ 100</span>
+        <span class="badge ${r.c}">${r.t}</span></div>
+      <p class="note">מדד חימום סולארי עולמי · 100 = היום הכי טוב בעולם</p>
+      ${sunAhead(d) ? `<p class="note">כולל תחזית לשעות השמש שנותרו${d.scoreSoFar ? ` – עד עכשיו ${d.scoreSoFar}` : ''}</p>` : ''}
       <div class="stats">
-        <div class="stat"><div class="k">קרינה על הקולטים</div><div class="v">${ltr(fmt(d.actual, 2) + ' kWh/m²')}</div></div>
-        <div class="stat"><div class="k">ביום בהיר</div><div class="v">${ltr(fmt(d.clear, 2) + ' kWh/m²')}</div></div>
+        <div class="stat"><div class="k">חום שימושי לקולט</div><div class="v">${ltr(fmt(d.heat, 1) + ' kWh/m²')}</div></div>
+        <div class="stat"><div class="k">ביום בהיר כאן</div><div class="v">${d.clearScore}</div></div>
         <div class="stat"><div class="k">עננות ממוצעת</div><div class="v">${d.cloudAvg == null ? '–' : Math.round(d.cloudAvg) + '%'}</div></div>
       </div>
       <div class="chart"></div>
       <div class="legend">
-        <span><i style="background:var(--sun)"></i>קרינה על הקולטים (W/m²)</span>
+        <span><i style="background:var(--sun)"></i>קרינה שמחממת (W/m²)</span>
+        <span><i style="background:var(--clear);opacity:.45"></i>חלשה מדי לחימום</span>
         <span><i style="background:var(--sun-soft)"></i>תחזית</span>
         <span><i style="background:none;border-top:2px dashed var(--clear);border-radius:0;height:0"></i>יום בהיר</span>
       </div>`;
@@ -366,7 +378,8 @@
       const bx = padL + i * bw + 1, w = Math.max(bw - 2, 1), top = y(x.gti), bh = y(0) - top;
       const r = Math.min(3, w / 2, bh);
       // rounded top, square base
-      s += `<path d="M${bx},${y(0)} V${top + r} Q${bx},${top} ${bx + r},${top} H${bx + w - r} Q${bx + w},${top} ${bx + w},${top + r} V${y(0)} Z" fill="${x.future ? 'var(--sun-soft)' : 'var(--sun)'}"/>`;
+      const heats = useful(x.gti, x.ta) > 0;
+      s += `<path d="M${bx},${y(0)} V${top + r} Q${bx},${top} ${bx + r},${top} H${bx + w - r} Q${bx + w},${top} ${bx + w},${top + r} V${y(0)} Z" fill="${!heats ? 'var(--clear)' : x.future ? 'var(--sun-soft)' : 'var(--sun)'}"${heats ? '' : ' opacity=".45"'}/>`;
     });
     const pts = hours.map((x, i) => `${padL + (i + 0.5) * bw},${y(x.clear)}`).join(' ');
     s += `<polyline points="${pts}" fill="none" stroke="var(--clear)" stroke-width="2" stroke-dasharray="4 3"/>`;
@@ -386,7 +399,7 @@
       const cx = padL + (i + 0.5) * bw;
       cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.setAttribute('visibility', 'visible');
       const startH = String((x.hour + 23) % 24).padStart(2, '0'), endH = String(x.hour).padStart(2, '0');
-      tip.innerHTML = `<b>${ltr(startH + ':00–' + endH + ':00')}</b>${x.future ? ' (תחזית)' : ''}<br>על הקולטים: ${ltr(Math.round(x.gti) + ' W/m²')}<br>יום בהיר: ${ltr(Math.round(x.clear) + ' W/m²')}<br>עננות: ${x.cloud ?? '–'}%`;
+      tip.innerHTML = `<b>${ltr(startH + ':00–' + endH + ':00')}</b>${x.future ? ' (תחזית)' : ''}<br>על הקולט: ${ltr(Math.round(x.gti) + ' W/m²')}<br>חום שימושי: ${ltr(Math.round(useful(x.gti, x.ta)) + ' W/m²')} (אוויר ${ltr(Math.round(x.ta) + '°')})<br>יום בהיר: ${ltr(Math.round(x.clear) + ' W/m²')}<br>עננות: ${x.cloud ?? '–'}%`;
       tip.style.display = 'block';
       const box = host.getBoundingClientRect();
       let left = ev.clientX - box.left + 12;
@@ -401,13 +414,13 @@
   }
 
   function renderCompare(days) {
-    const [y, t] = days.map(heatOf);
-    if (days.length < 2 || !y || !t) { $('compare').hidden = true; return; }
-    const diff = Math.round(t.gain) - Math.round(y.gain);
-    const word = diff >= 2 ? 'הדוד מתחמם יותר' : diff <= -2 ? 'הדוד מתחמם פחות' : 'חימום דומה';
+    if (days.length < 2) { $('compare').hidden = true; return; }
+    const [y, t] = days;
+    const diff = t.score - y.score;
+    const word = diff >= 3 ? 'מחמם יותר' : diff <= -3 ? 'מחמם פחות' : 'דומה';
     $('compare').hidden = false;
-    $('compare').innerHTML = `<b>היום לעומת אתמול:</b> ${word} – ${ltr('+' + Math.round(t.gain) + '°')} מול ${ltr('+' + Math.round(y.gain) + '°')}
-      (${ltr((diff >= 0 ? '+' : '') + diff + '°')})${sunAhead(t) ? ' <span class="note">(היום כולל תחזית לשעות השמש שנותרו)</span>' : ''}`;
+    $('compare').innerHTML = `<b>היום לעומת אתמול:</b> ${word} – <strong>${t.score}</strong> מול <strong>${y.score}</strong>
+      (${ltr((diff >= 0 ? '+' : '') + diff)} נק׳)${sunAhead(t) ? ' <span class="note">(היום כולל תחזית לשעות השמש שנותרו)</span>' : ''}`;
   }
 
   // ---------- Location ----------
@@ -431,9 +444,7 @@
 
   window.HWM = {
     get loc() { return loc; }, setLoc: (l) => setLoc(l, true), askLoc,
-    reload: () => load(),
-    renderDays: () => { if (window.HWM.weather) renderDays(window.HWM.weather); },
-    clearSkyHourMean
+    reload: () => load()
   };
 
   // onFail runs when location is unavailable (denied, unsupported, timeout)

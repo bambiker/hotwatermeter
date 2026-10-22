@@ -21,7 +21,7 @@
     eff: 0.7,         // collector optical efficiency × calibration (learned)
     ul: 5,            // collector heat loss, W/m²·°C (more when it's cold outside)
     tin: null,        // cold inlet water °C; null = follow the season (recent air temperature)
-    tshower: 40,      // comfortable shower temperature °C
+    tshower: null,    // comfortable shower temperature °C; null = by season (warmer in winter)
     tau: 40,          // tank cooling time constant, hours
     heaterKw: 2.5,    // electric element power
     heaterEff: 1,     // how much of the element's nominal heat reaches usable water (learned)
@@ -30,16 +30,20 @@
     morning: '07:00',
     evening: '19:00'
   };
-  // model 2: tilted-collector irradiance with temperature-dependent losses. Calibration learned
-  // under the old horizontal model doesn't carry over, so it starts again.
-  const MODEL = 2;
-  const MODEL_RESET = { eff: DEFAULTS.eff, tin: null, model: MODEL };
+  // Settings migrations. 2: tilted-collector irradiance with temperature-dependent losses, so
+  // calibration learned under the old horizontal model starts again. 3: seasonal shower temperature.
+  const MODEL = 3;
+  const migration = (from) => Object.assign({},
+    (from ?? 0) < 2 ? { eff: DEFAULTS.eff, tin: null } : {},
+    (from ?? 0) < 3 ? { tshower: null } : {},
+    { model: MODEL });
   const saved = store.get('hwm.tank', {});
-  if (saved.model !== MODEL) Object.assign(saved, MODEL_RESET);
+  if (saved.model !== MODEL) Object.assign(saved, migration(saved.model));
   const cfg = Object.assign({}, DEFAULTS, { model: MODEL });
   Object.keys(DEFAULTS).forEach(k => { if (saved[k] != null && saved[k] !== '') cfg[k] = saved[k]; });
   const fam = Object.assign({ members: [], logs: [], boilers: [] }, store.get('hwm.family', {}));
   const saveLocal = () => { store.set('hwm.tank', cfg); store.set('hwm.family', fam); };
+  if (saved.model !== cfg.model || store.get('hwm.tank', {}).model !== MODEL) store.set('hwm.tank', cfg); // keep the migration
 
   // Every change is an op: applied locally right away, then queued for the shared sheet.
   // apps-script/Code.gs implements the same applyOp on the server.
@@ -124,8 +128,9 @@
     sync.outbox.forEach(applyOp);
     saveLocal();
     if (cfg.model !== MODEL && !sync.outbox.some(o => o.op === 'cfg' && o.cfg.model === MODEL)) {
-      sync.outbox.push({ op: 'cfg', cfg: MODEL_RESET });
-      applyOp({ op: 'cfg', cfg: MODEL_RESET });
+      const m = migration(cfg.model);
+      sync.outbox.push({ op: 'cfg', cfg: m });
+      applyOp({ op: 'cfg', cfg: m });
       store.set('hwm.outbox', sync.outbox);
       saveLocal();
     }
@@ -250,17 +255,24 @@
   const member = (id) => fam.members.find(m => m.id === id);
   const need = (m) => (m && m.liters != null ? m.liters : cfg.perPerson);
   // °C the tank loses per liter of shower-temperature water (energy balance, fully mixed tank)
-  const perLiter = () => Math.max(1, cfg.tshower - tin()) / cfg.liters;
+  const perLiter = () => Math.max(1, tsh() - tin()) / cfg.liters;
+  const airMean = () => {
+    const t = wx ? wx.hours.map(h => h.ta).filter(v => v != null) : [];
+    return t.length ? t.reduce((a, b) => a + b, 0) / t.length : 20;
+  };
+  // Comfortable shower temperature follows the season too: ~41° when it's 13° out, ~37° at 28°
+  function tsh() {
+    return cfg.tshower ?? Math.round(Math.min(42, Math.max(36, 44 - 0.25 * airMean())));
+  }
   // Mains water follows the season: by default the average air temperature of the last days
   function tin() {
     if (cfg.tin != null) return cfg.tin;
-    const t = wx ? wx.hours.map(h => h.ta).filter(v => v != null) : [];
-    return t.length ? Math.round(Math.min(26, Math.max(12, t.reduce((a, b) => a + b, 0) / t.length))) : 20;
+    return Math.round(Math.min(26, Math.max(12, airMean())));
   }
   const drawOf = (m) => need(m) * perLiter();
   // How much shower-temperature water the tank can still give before it drops to shower temperature
   // (used only for learning; cold water mixes in as hot is drawn, see perLiter)
-  const capacity = (T) => Math.max(0, (T - cfg.tshower) / perLiter());
+  const capacity = (T) => Math.max(0, (T - tsh()) / perLiter());
 
   const STEP = HOUR / 4;
   // A run logged as "until I switch it off" counts up to now, and at most this long if nobody does
@@ -292,9 +304,9 @@
   function applyLog(T, l) {
     if (l.boiler) T = Math.max(T, cfg.heaterMax); // showers logged before boiler runs had their own log
     const d = drawOf(member(l.member));
-    if (l.outcome === 'full') T = Math.max(T - d, cfg.tshower);
-    else if (l.outcome === 'partial') T = Math.min(T - d, cfg.tshower - 1);
-    else T = Math.min(T - d, cfg.tshower - 3);
+    if (l.outcome === 'full') T = Math.max(T - d, tsh());
+    else if (l.outcome === 'partial') T = Math.min(T - d, tsh() - 1);
+    else T = Math.min(T - d, tsh() - 3);
     return Math.max(T, tin());
   }
 
@@ -326,36 +338,6 @@
     return { T, pts, gains };
   }
 
-  // 100 = the best clear day of the year for this tank: same model on clear-sky sun, a mild day
-  // (25°C air) and a lukewarm tank (40°C) at dawn
-  let refCache = { key: '', gain: 1 };
-  function refGain() {
-    const key = [wx.lat, wx.lon, cfg.tilt, cfg.azimuth, cfg.area, cfg.eff, cfg.ul, cfg.liters].join('|');
-    if (refCache.key === key) return refCache.gain;
-    const y = new Date().getUTCFullYear();
-    let best = 1;
-    for (let doy = 0; doy < 365; doy += 7) {
-      const day = Date.UTC(y, 0, 1) + doy * DAY - wx.off; // local midnight
-      let T = 40, gain = 0;
-      for (let hr = 1; hr <= 24; hr++) {
-        const h = { gti: HWM.clearSkyHourMean(day + hr * HOUR, wx.lat, wx.lon, cfg.tilt, cfg.azimuth), ta: 25 };
-        for (let q = 0; q < 4; q++) { const s = solarGain(T, h, 0.25); gain += s; T += s; }
-      }
-      best = Math.max(best, gain);
-    }
-    refCache = { key, gain: best };
-    return best;
-  }
-
-  // Exposed to index.html for the daily cards
-  function heatByDate() {
-    const gains = run().gains, ref = refGain(), out = {};
-    for (const [date, g] of Object.entries(gains)) {
-      out[date] = { gain: g.total, gainSoFar: g.soFar, score: Math.min(100, Math.round(g.total / ref * 100)) };
-    }
-    return out;
-  }
-
   // Learn from a shower outcome, using the tank state the model had just before it
   function learn(l) {
     const T0 = run(l.t).T;
@@ -371,12 +353,12 @@
     };
     let msg = '';
     if (l.outcome === 'full') {
-      if (T0 < cfg.tshower) { tune(true); msg = `המודל העריך שהדוד קר מדי – ${what} עודכן כלפי מעלה.`; }
+      if (T0 < tsh()) { tune(true); msg = `המודל העריך שהדוד קר מדי – ${what} עודכן כלפי מעלה.`; }
       else if (m && est > cap) { m.liters = Math.round(est + 0.5 * (cap - est)); msg = `${m.name} כנראה צריך פחות מים – עודכן ל-${m.liters} ליטר.`; }
     } else if (l.outcome === 'partial') {
       if (cap < 5) { tune(true); msg = `היו קצת מים חמים למרות שהמודל העריך שאין – ${what} עודכן.`; }
       else if (m && est < cap) { m.liters = Math.round(est + 0.5 * (cap * 1.15 - est)); msg = `${m.name} כנראה צריך יותר מים – עודכן ל-${m.liters} ליטר.`; }
-    } else if (T0 > cfg.tshower + 2) {
+    } else if (T0 > tsh() + 2) {
       tune(false); msg = `המודל העריך שיש מים חמים ולא היו – ${what} עודכן כלפי מטה.`;
     }
     if (m) {
@@ -409,17 +391,38 @@
     const who = fam.members.filter(m => !m.skip || !m.skip[slot]);
     const rows = who.map(m => {
       const d = drawOf(m);
-      const st = T - d >= cfg.tshower - 0.05 ? 'ok' : T > cfg.tshower ? 'partial' : 'cold';
+      const st = T - d >= tsh() - 0.05 ? 'ok' : T > tsh() ? 'partial' : 'cold';
       T = Math.max(tin(), T - d);
       return { m, st };
     });
-    const needT = cfg.tshower + who.reduce((s, m) => s + drawOf(m), 0);
+    const needT = tsh() + who.reduce((s, m) => s + drawOf(m), 0);
     const target = Math.min(needT, Math.max(cfg.heaterMax, T0));
     const minutes = T0 >= needT ? 0 : Math.ceil((target - T0) * cfg.liters * CP / 3600 / (cfg.heaterKw * cfg.heaterEff) * 60);
     // how many of the list get a full hot shower once the tank is at `target`
     let Th = target, withHeater = 0;
-    for (const m of who) { if (Th - drawOf(m) < cfg.tshower - 0.05) break; Th -= drawOf(m); withHeater++; }
+    for (const m of who) { if (Th - drawOf(m) < tsh() - 0.05) break; Th -= drawOf(m); withHeater++; }
     return { T0, rows, minutes, withHeater, total: who.length };
+  }
+
+  // ---------- Showers tonight (the family's own measure: their tank, their people, the season) ----------
+  function showersTonight(now) {
+    const t = nextAt(cfg.evening, now - 3 * HOUR); // "tonight" until 3 hours after the evening showers
+    const at = (time) => {
+      if (time < wx.hours[0].start || time > wx.hours[wx.hours.length - 1].end) return null;
+      const p = plan(time, 'evening');
+      if (p.total) return { ok: p.rows.filter(r => r.st === 'ok').length, total: p.total };
+      return { n: Math.floor(capacity(p.T0) / cfg.perPerson) }; // nobody listed: default-size showers
+    };
+    const tonight = at(t), yday = at(t - DAY);
+    const say = (x) => x.total != null ? `${ltr(x.ok)} מתוך ${ltr(x.total)}` : `~${ltr(x.n)} מקלחות`;
+    const pct = (x) => x.total != null ? Math.round(x.ok / x.total * 100) : null;
+    const cls = !tonight ? '' : tonight.total != null ? (pct(tonight) === 100 ? 'good' : pct(tonight) > 0 ? 'mid' : 'bad') : '';
+    const html = !tonight ? '' : `<div class="showers">
+      <div class="k">🚿 ${t - now > 12 * HOUR ? 'מחר בערב' : 'הערב'} (${ltr(hhmm(t))}) בלי להדליק דוד</div>
+      <div class="big2 ${cls}">${tonight.total != null ? `מספיק ל-${say(tonight)}` : say(tonight)}</div>
+      <div class="note">${yday ? `אתמול באותה שעה: ${say(yday)}` : ''} · מקלחת ב-${ltr(tsh() + '°')}, מים מהברז ${ltr(tin() + '°')}</div>
+    </div>`;
+    return { html, tonight, yday };
   }
 
   // ---------- Rendering ----------
@@ -473,6 +476,8 @@
     const active = activeRun(now);
     const runs = [...fam.boilers].sort((a, b) => b.t - a.t).slice(0, 8);
     const mins = (b) => Math.round((runEnd(b, now) - b.t) / 60000);
+    const sh = showersTonight(now);
+    const sunToday = run().gains[localStr(now).slice(0, 10)];
 
     root.innerHTML = `
     <section class="card fam" id="tankCard">
@@ -480,12 +485,14 @@
       ${sync.conf ? `<div class="note sync-status">${syncStatusText()}</div>` : '<button type="button" id="openShare" class="linkish">🔗 לשתף את היומן עם כל המשפחה</button>'}
       <div class="tank-now">
         <div><div class="k">טמפ׳ משוערת עכשיו</div><div class="big">${ltr('~' + fmt(cur) + '°C')}</div></div>
+        ${sh.html}
         <div class="note drop">כל מקלחת של ${ltr(cfg.perPerson)} ליטר מכניסה לדוד מים קרים ומורידה אותו בכ-${ltr(fmt(cfg.perPerson * perLiter(), 1) + '°')}</div>
       </div>
+      ${sunToday && sunToday.total >= 0.5 ? `<p class="note">☀️ השמש מוסיפה לדוד היום כ-${ltr('+' + Math.round(sunToday.total) + '°')}</p>` : ''}
       <div class="chart" id="tankChart"></div>
       <div class="legend">
         <span><i style="background:var(--hot)"></i>טמפ׳ הדוד (תחזית בקו מקווקו)</span>
-        <span><i style="background:none;border-top:2px dashed var(--clear);border-radius:0;height:0"></i>${cfg.tshower}°C – מקלחת נעימה</span>
+        <span><i style="background:none;border-top:2px dashed var(--clear);border-radius:0;height:0"></i>${tsh()}°C – מקלחת נעימה</span>
         <span>● מקלחת שנרשמה</span>
         <span><i style="background:var(--mid);opacity:.25"></i>דוד חשמלי דלוק</span>
       </div>
@@ -542,7 +549,7 @@
 
     <details class="card fam" id="famBox" ${fam.members.length ? '' : 'open'}>
       <summary>👨‍👩‍👧 בני המשפחה</summary>
-      <p class="note">כמה ליטר מים ב-${cfg.tshower}°C כל אחד צריך למקלחת. בהתחלה משתמשים בברירת המחדל (${cfg.perPerson} ל׳), ואחרי כל מקלחת שנרשמת המספר מתעדכן.</p>
+      <p class="note">כמה ליטר מים ב-${tsh()}°C כל אחד צריך למקלחת. בהתחלה משתמשים בברירת המחדל (${cfg.perPerson} ל׳), ואחרי כל מקלחת שנרשמת המספר מתעדכן.</p>
       ${fam.members.length ? `<table class="members"><thead><tr><th>שם</th><th>ליטר למקלחת</th><th>נלמד מ-</th><th>בוקר</th><th>ערב</th><th></th><th></th></tr></thead><tbody>
         ${fam.members.map((m, i) => `<tr data-id="${m.id}">
           <td><input class="m-name" value="${esc(m.name)}" aria-label="שם"></td>
@@ -601,7 +608,7 @@
         <label>נצילות / כיול (נלמד אוטומטית)<input data-cfg="eff" type="number" min="0.2" max="1" step="0.01" value="${cfg.eff}"></label>
         <label>הפסדי חום של הקולט (W/m²·°C)<input data-cfg="ul" type="number" min="0" max="20" step="0.5" value="${cfg.ul}"></label>
         <label>טמפ׳ מים קרים (°C)<input data-cfg="tin" type="number" step="1" value="${cfg.tin ?? ''}" placeholder="אוטומטי לפי העונה (~${tin()}°)"></label>
-        <label>טמפ׳ מקלחת (°C)<input data-cfg="tshower" type="number" step="1" value="${cfg.tshower}"></label>
+        <label>טמפ׳ מקלחת (°C)<input data-cfg="tshower" type="number" step="1" value="${cfg.tshower ?? ''}" placeholder="אוטומטי לפי העונה (~${tsh()}°)"></label>
         <label>קצב התקררות – קבוע זמן (שעות)<input data-cfg="tau" type="number" min="5" step="1" value="${cfg.tau}"></label>
         <label>הספק גוף חימום (kW)<input data-cfg="heaterKw" type="number" min="0.5" step="0.5" value="${cfg.heaterKw}"></label>
         <label>יעילות הדוד החשמלי (נלמד אוטומטית)<input data-cfg="heaterEff" type="number" min="0.3" max="2" step="0.05" value="${cfg.heaterEff}"></label>
@@ -621,8 +628,6 @@
 
     drawTankChart($('tankChart'), now);
     placeHome();
-    heatCache = heatByDate();
-    if (window.HWM) HWM.renderDays();
     ['famBox', 'cfgBox', 'shareBox'].forEach(id => {
       const el = $(id), key = 'hwm.open.' + id, v = store.get(key, null);
       if (v != null) el.open = v;
@@ -636,7 +641,7 @@
     if (pts.length < 2) { host.innerHTML = ''; return; }
     const W = Math.round(Math.min(640, Math.max(300, host.clientWidth || 640))), H = W < 480 ? 200 : 220, padL = 34, padR = 8, padT = 10, padB = 24;
     const yMin = Math.floor(Math.min(tin(), ...pts.map(p => p.T)) / 10) * 10;
-    const yMax = Math.ceil(Math.max(cfg.tshower + 10, ...pts.map(p => p.T)) / 10) * 10;
+    const yMax = Math.ceil(Math.max(tsh() + 10, ...pts.map(p => p.T)) / 10) * 10;
     const x = t => padL + (W - padL - padR) * (t - from) / (to - from);
     const y = v => padT + (H - padT - padB) * (1 - (v - yMin) / (yMax - yMin));
     const path = arr => arr.map((p, i) => (i ? 'L' : 'M') + x(p.t).toFixed(1) + ',' + y(p.T).toFixed(1)).join('');
@@ -652,7 +657,7 @@
       const x0 = x(Math.max(a, from)), x1 = x(Math.min(b, to));
       if (x1 > x0) s += `<rect x="${x0}" y="${padT}" width="${Math.max(1, x1 - x0)}" height="${H - padT - padB}" fill="var(--mid)" opacity=".18"/>`;
     });
-    s += `<line x1="${padL}" x2="${W - padR}" y1="${y(cfg.tshower)}" y2="${y(cfg.tshower)}" stroke="var(--clear)" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+    s += `<line x1="${padL}" x2="${W - padR}" y1="${y(tsh())}" y2="${y(tsh())}" stroke="var(--clear)" stroke-width="1.5" stroke-dasharray="4 3"/>`;
     for (let t = from; t <= to; t += 6 * HOUR) {
       const lbl = hhmm(t) === '00:00' ? dayWord(t, now) : hhmm(t).slice(0, 2);
       s += `<text x="${x(t)}" y="${H - 8}" font-size="10" text-anchor="middle" fill="var(--ink-3)">${lbl}</text>`;
@@ -781,7 +786,7 @@
       const k = el.dataset.cfg;
       let v = null;
       if (k === 'morning' || k === 'evening') { if (el.value) v = el.value; }
-      else if (k === 'tin' && el.value === '') { commit([{ op: 'cfg', cfg: { tin: null } }]); return; }
+      else if ((k === 'tin' || k === 'tshower') && el.value === '') { commit([{ op: 'cfg', cfg: { [k]: null } }]); return; }
       else if (el.value !== '' && isFinite(+el.value) && (+el.value > 0 || ['tin', 'azimuth', 'tilt', 'ul'].includes(k))) v = +el.value;
       if (v != null) {
         const before = panelKey();
@@ -806,7 +811,7 @@
 
   function onWeather(d) {
     const off = d.utc_offset_seconds * 1000;
-    const gti = d.hourly.global_tilted_irradiance || d.hourly.shortwave_radiation;
+    const gti = d.hourly.tank_gti || d.hourly.global_tilted_irradiance || d.hourly.shortwave_radiation; // for this family's collector
     wx = {
       off, lat: d.latitude, lon: d.longitude,
       hours: d.hourly.time.map((t, i) => {
@@ -816,8 +821,6 @@
     };
     render();
   }
-  if (window.HWM) HWM.heat = (date) => (wx ? heatCache[date] ?? null : null);
-  let heatCache = {};
   document.addEventListener('hwm:weather', (e) => onWeather(e.detail));
   if (window.HWM && HWM.weather) onWeather(HWM.weather);
 
