@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <rect width="256" height="256" rx="56" fill="#FFF3DC"/>
+  <!-- sun -->
+  <g stroke="#F5A524" stroke-width="8" stroke-linecap="round">
+    <line x1="64" y1="18" x2="64" y2="32"/><line x1="64" y1="96" x2="64" y2="110"/>
+    <line x1="18" y1="64" x2="32" y2="64"/><line x1="96" y1="64" x2="110" y2="64"/>
+    <line x1="31" y1="31" x2="41" y2="41"/><line x1="87" y1="87" x2="97" y2="97"/>
+    <line x1="97" y1="31" x2="87" y2="41"/><line x1="31" y1="97" x2="41" y2="87"/>
+  </g>
+  <circle cx="64" cy="64" r="22" fill="#F5A524"/>
+  <!-- legs -->
+  <g stroke="#546E7A" stroke-width="7" stroke-linecap="round">
+    <line x1="118" y1="142" x2="104" y2="214"/><line x1="214" y1="142" x2="200" y2="214"/>
+  </g>
+  <!-- tank -->
+  <path d="M104,94 H206 V142 H104 A12,24 0 0 1 104,94 Z" fill="#ECEFF1" stroke="#37474F" stroke-width="7" stroke-linejoin="round"/>
+  <ellipse cx="206" cy="118" rx="12" ry="24" fill="#CFD8DC" stroke="#37474F" stroke-width="7"/>
+  <!-- collector panel -->
+  <polygon points="88,150 224,150 204,222 52,222" fill="#1E4E8C" stroke="#14325A" stroke-width="7" stroke-linejoin="round"/>
+  <g stroke="#6FA8E8" stroke-width="5" stroke-linecap="round">
+    <line x1="116" y1="158" x2="98" y2="214"/><line x1="146" y1="158" x2="132" y2="214"/>
+    <line x1="176" y1="158" x2="166" y2="214"/><line x1="204" y1="158" x2="198" y2="214"/>
+  </g>
+</svg>
