@@ -45,6 +45,12 @@
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
   .loc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
   .loc .place { font-weight: 600; margin-inline-end: auto; }
+  .loc.asking { border: 2px solid var(--sun); }
+  .loc-ask { flex-basis: 100%; font-size: 1.05rem; }
+  #locSlot .loc { border: none; padding: 0; margin: 8px 0 0; background: none; }
+  .home-loc { margin: 12px 0 4px; }
+  .home-loc .k { color: var(--ink-2); font-size: .9rem; font-weight: 600; }
+  #famPlace { font-weight: 600; color: var(--ink-2); margin: -12px 0 16px; }
   input, button, select {
     font: inherit; color: var(--ink); background: var(--surface);
     border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
@@ -131,13 +137,16 @@
   <h1>☀️ מד מים חמים</h1>
   <p class="sub">כמה שמש הייתה היום, כמה חמים המים בדוד, ומי יכול להתקלח בלי להדליק דוד – לומד מכל מקלחת שנרשמת.</p>
 
-  <div class="card loc">
+  <p id="famPlace" class="note" hidden></p>
+
+  <div id="locHome"><div class="card loc" id="locCard">
+    <div class="loc-ask" id="locAsk" hidden><b>👋 ברוכים הבאים!</b> איפה הבית? לפי המיקום נחשב כמה שמש מגיעה לדוד.</div>
     <span class="place" id="place">…</span>
     <button id="geo" type="button">📍 המיקום שלי</button>
     <input id="q" type="search" placeholder="חיפוש עיר…" aria-label="חיפוש עיר">
     <button id="search" type="button">חפש</button>
     <div id="results" style="flex-basis:100%"></div>
-  </div>
+  </div></div>
 
   <div id="status" class="note"></div>
   <div class="days" id="days"></div>
@@ -161,9 +170,10 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
   };
 
-  const FALLBACK = { name: 'תל אביב', lat: 32.0853, lon: 34.7818 };
   const saved = store.get('hwm.loc', null);
-  let loc = saved || FALLBACK;
+  let loc = saved; // null until the user picks one
+  // In a family the home location is shared (family.js keeps it in the family settings)
+  const inFamily = () => !!store.get('hwm.sync', null) || /join=/.test(location.hash);
 
   // ---------- Sun geometry & clear-sky model ----------
   const rad = Math.PI / 180;
@@ -206,6 +216,7 @@
 
   // ---------- Data ----------
   async function load() {
+    if (!loc) return;
     $('place').textContent = '📍 ' + loc.name;
     $('status').textContent = 'טוען נתונים…';
     $('status').classList.remove('err');
@@ -369,21 +380,39 @@
   }
 
   // ---------- Location ----------
-  function setLoc(l) { loc = l; store.set('hwm.loc', l); $('results').innerHTML = ''; load(); }
+  // fromFamily: the change came from the shared family settings, so don't echo it back
+  function setLoc(l, fromFamily) {
+    loc = l;
+    store.set('hwm.loc', l);
+    $('results').innerHTML = '';
+    $('q').value = '';
+    $('locAsk').hidden = true;
+    $('locCard').classList.remove('asking');
+    load();
+    if (!fromFamily) document.dispatchEvent(new CustomEvent('hwm:loc', { detail: l }));
+  }
+
+  function askLoc() {
+    $('locAsk').hidden = false;
+    $('locCard').classList.add('asking');
+    $('place').textContent = '';
+  }
+
+  window.HWM = { get loc() { return loc; }, setLoc: (l) => setLoc(l, true), askLoc };
 
   // onFail runs when location is unavailable (denied, unsupported, timeout)
   function useMyLocation(onFail) {
     if (!navigator.geolocation) { onFail('הדפדפן לא תומך במיקום'); return; }
     $('place').textContent = '📍 מאתר מיקום…';
     navigator.geolocation.getCurrentPosition(
-      p => setLoc({ name: 'המיקום שלי', lat: +p.coords.latitude.toFixed(4), lon: +p.coords.longitude.toFixed(4), geo: true }),
+      p => setLoc({ name: inFamily() ? 'הבית' : 'המיקום שלי', lat: +p.coords.latitude.toFixed(4), lon: +p.coords.longitude.toFixed(4), geo: true }),
       e => onFail('לא ניתן לקבל מיקום: ' + e.message),
       { timeout: 10000, maximumAge: 3600000 }
     );
   }
   $('geo').addEventListener('click', () => useMyLocation(msg => {
-    $('place').textContent = '📍 ' + loc.name;
-    $('status').textContent = msg;
+    $('place').textContent = loc ? '📍 ' + loc.name : '';
+    $('status').textContent = msg + (loc ? '' : ' – אפשר לחפש עיר.');
   }));
 
   async function search() {
@@ -407,12 +436,12 @@
   $('search').addEventListener('click', search);
   $('q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
 
-  // Default to the device location, unless the user picked a city by search
-  if (!saved || saved.geo) {
-    useMyLocation(async msg => {
-      await load();
-      if (!$('status').textContent) $('status').textContent = msg + ' – מוצג ' + loc.name + '. אפשר לחפש עיר למעלה.';
-    });
+  if (inFamily()) {
+    if (saved) load(); // family.js then applies the family's home, or asks for one
+  } else if (!saved) {
+    askLoc(); // first visit as a guest
+  } else if (saved.geo) {
+    useMyLocation(() => load()); // refresh "my location"; keep the last one if it's unavailable
   } else {
     load();
   }
