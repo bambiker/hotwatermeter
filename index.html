@@ -294,6 +294,8 @@
     // today first: it's the one that matters (top on mobile, right side in RTL)
     [...days].reverse().forEach(d => $('days').appendChild(dayCard(d, yMax)));
     renderCompare(days);
+    // kept so family.js can pick it up even if it loads after this fires
+    window.HWM.weather = data;
     document.dispatchEvent(new CustomEvent('hwm:weather', { detail: data }));
   }
 
