@@ -206,7 +206,9 @@
   // °C the tank loses per liter of shower-temperature water (energy balance, fully mixed tank)
   const perLiter = () => Math.max(1, cfg.tshower - cfg.tin) / cfg.liters;
   const drawOf = (m) => need(m) * perLiter();
-  const capacity = (T) => Math.max(0, (T - cfg.tshower) / perLiter()); // liters at shower temp
+  // How much shower-temperature water the tank can still give before it drops to shower temperature
+  // (used only for learning; cold water mixes in as hot is drawn, see perLiter)
+  const capacity = (T) => Math.max(0, (T - cfg.tshower) / perLiter());
 
   const STEP = HOUR / 4;
   // A run logged as "until I switch it off" counts up to now, and at most this long if nobody does
@@ -287,7 +289,7 @@
       if (m.liters != null) m.liters = Math.min(200, Math.max(5, m.liters));
       m.n = (m.n || 0) + 1;
     }
-    const est0 = `לפי המודל היו בדוד ~${Math.round(T0)}°C (מספיק לכ-${Math.round(cap)} ל׳).`;
+    const est0 = `לפי המודל היו בדוד ~${Math.round(T0)}°C.`;
     return est0 + ' ' + (msg || 'תואם את ההערכה – לא היה צריך לעדכן.');
   }
 
@@ -323,7 +325,7 @@
     // how many of the list get a full hot shower once the tank is at `target`
     let Th = target, withHeater = 0;
     for (const m of who) { if (Th - drawOf(m) < cfg.tshower - 0.05) break; Th -= drawOf(m); withHeater++; }
-    return { T0, cap: capacity(T0), rows, minutes, withHeater, total: who.length };
+    return { T0, rows, minutes, withHeater, total: who.length };
   }
 
   // ---------- Rendering ----------
@@ -338,7 +340,7 @@
     const p = plan(t, slot);
     const status = !p.rows.length ? '' : p.rows.every(r => r.st === 'ok') ? 'ok' : p.rows.some(r => r.st === 'ok') ? 'partial' : 'cold';
     const running = slot === 'now' && activeRun(now);
-    const advice = !p.rows.length ? `<p class="note">אפשר לשמור בערך ${ltr(fmt(p.cap) + ' ליטר')} מים ב-${cfg.tshower}°.</p>`
+    const advice = !p.rows.length ? ''
       : p.minutes === 0 ? `<p class="advice ok">✅ ${running ? 'אפשר לכבות את הדוד' : 'אין צורך להדליק דוד'}</p>`
       : running && p.minutes >= 3 ? `<p class="advice warn">🔥 הדוד דלוק – צריך עוד כ-${ltr(p.minutes)} דקות${p.withHeater < p.total ? ` (יספיק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף)` : ''}</p>`
       : p.minutes < 3 ? `<p class="advice warn">⚠️ הדוד כבר חם, אבל יספיק רק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף – כדאי לפזר את המקלחות</p>`
@@ -373,7 +375,7 @@
       ${sync.conf ? `<div class="note sync-status">${syncStatusText()}</div>` : '<button type="button" id="openShare" class="linkish">🔗 לשתף את היומן עם כל המשפחה</button>'}
       <div class="tank-now">
         <div><div class="k">טמפ׳ משוערת עכשיו</div><div class="big">${ltr('~' + fmt(cur) + '°C')}</div></div>
-        <div><div class="k">מים חמים זמינים</div><div class="big2">${ltr('~' + fmt(capacity(cur)) + ' ל׳')}</div><div class="note">ב-${cfg.tshower}°C</div></div>
+        <div class="note drop">כל מקלחת של ${ltr(cfg.perPerson)} ליטר מכניסה לדוד מים קרים ומורידה אותו בכ-${ltr(fmt(cfg.perPerson * perLiter(), 1) + '°')}</div>
       </div>
       <div class="chart" id="tankChart"></div>
       <div class="legend">
