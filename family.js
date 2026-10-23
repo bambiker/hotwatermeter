@@ -303,14 +303,19 @@
     return Math.min(T, cfg.tankMax);
   }
 
-  // A logged shower also corrects the simulated state to match what was observed
+  // A logged shower also corrects the simulated state: the answer says where the tank was before the
+  // shower (relative to shower temp ts and this person's draw d), so the temperature is moved into
+  // that range first, and then the shower's draw is taken out – as it was in the real tank.
   function applyLog(T, l) {
     if (l.boiler) T = Math.max(T, cfg.heaterMax); // showers logged before boiler runs had their own log
-    const d = drawOf(member(l.member));
-    if (l.outcome === 'full') T = Math.max(T - d, tsh());
-    else if (l.outcome === 'partial') T = Math.min(T - d, tsh() - 1);
-    else T = Math.min(T - d, tsh() - 3);
-    return Math.max(T, tin());
+    const d = drawOf(member(l.member)), ts = tsh();
+    const within = (lo, hi) => Math.min(hi, Math.max(lo, T));
+    if (l.outcome === 'plenty') T = within(ts + d + EDGE, Infinity);
+    else if (l.outcome === 'edge') T = within(ts + d, ts + d + EDGE);
+    else if (l.outcome === 'full') T = within(ts + d, Infinity);
+    else if (l.outcome === 'partial') T = within(ts, ts + d);
+    else T = within(-Infinity, ts);
+    return Math.max(T - d, tin());
   }
 
   // Simulates in 15-minute steps; returns the tank temperature just before stopAt, the trace,
@@ -359,11 +364,19 @@
   const PRIOR_WEIGHT = 1.5; // per (ln of the ratio to the default)²
   const sq = (x) => x * x;
   const cdf = (x) => 1 / (1 + Math.exp(-1.7 * x / SIGMA));
+  // Outcomes, by what the tank had left at the end of the shower (x = end temperature − shower temp):
+  //   plenty  – still mixing in cold at the end:            x > EDGE
+  //   edge    – hot to the end, but on the hot tap only:    0 < x < EDGE   (almost a measurement)
+  //   full    – hot to the end (logged before the question): x > 0
+  //   partial – ran out during the shower;  none – no hot water from the start
+  const EDGE = 3;
   function outcomeProbs(T, d) {
-    const ts = tsh();
-    const full = cdf(T - d - ts), none = cdf(ts - T);
-    return { full, none, partial: Math.max(1e-6, 1 - full - none) };
+    const x = T - d - tsh();
+    const full = cdf(x), plenty = cdf(x - EDGE), none = cdf(tsh() - T);
+    return { full, plenty, edge: Math.max(1e-6, full - plenty), none, partial: Math.max(1e-6, 1 - full - none) };
   }
+  // For the accuracy score the three main answers are compared: hot to the end / ran out / none
+  const coarse = (o) => (o === 'plenty' || o === 'edge' ? 'full' : o);
 
   // Lean re-simulation for learning: only the tank temperature just before each logged shower
   function tempsBeforeShowers(logs) {
@@ -401,7 +414,7 @@
     if (fair.length < 5) return null;
     const hits = fair.filter(i => {
       const p = outcomeProbs(Ts[i], drawOf(member(logs[i].member)));
-      return Object.keys(p).reduce((a, b) => (p[a] >= p[b] ? a : b)) === logs[i].outcome;
+      return ['full', 'partial', 'none'].reduce((a, b) => (p[a] >= p[b] ? a : b)) === coarse(logs[i].outcome);
     }).length;
     return { pct: Math.round(hits / fair.length * 100), n: fair.length };
   }
@@ -533,10 +546,13 @@
 
   // ---------- Rendering ----------
   const ICON = { ok: '✅', partial: '⚠️', cold: '❌' };
+  // b: the button text; t: how it reads in the log. 'full' is kept for showers logged before the split.
   const OUT = {
+    plenty: { b: 'חם עד הסוף, ובסוף עוד הוספתי קר', t: 'חם, ועוד עם קר בסוף', i: '✅', c: 'var(--good)' },
+    edge: { b: 'חם עד הסוף, אבל בסוף כבר רק על חם', t: 'הספיק בדיוק (בסוף רק חם)', i: '🔥', c: 'var(--good)' },
     full: { t: 'חם עד הסוף', i: '✅', c: 'var(--good)' },
-    partial: { t: 'נגמר באמצע', i: '⚠️', c: 'var(--mid)' },
-    none: { t: 'לא היו מים חמים', i: '❌', c: 'var(--bad)' }
+    partial: { b: 'נגמר באמצע', t: 'נגמר באמצע', i: '⚠️', c: 'var(--mid)' },
+    none: { b: 'לא היו מים חמים', t: 'לא היו מים חמים', i: '❌', c: 'var(--bad)' }
   };
 
   function slotCard(title, t, slot, now) {
@@ -641,9 +657,9 @@
         <label>מי התקלח<select id="logWho">${fam.members.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></label>
         <label>מתי<input id="logTime" type="datetime-local" value="${defaultTime}"></label>
       </div>
-      <div class="note">איך היו המים?</div>
+      <div class="note">איך היו המים? (ואם היה חם עד הסוף – בסוף המקלחת עוד הוספת קר, או שכבר היית רק על חם?)</div>
       <div class="out-btns">
-        ${Object.entries(OUT).map(([k, o]) => `<button type="button" data-out="${k}">${o.i} ${o.t}</button>`).join('')}
+        ${Object.entries(OUT).filter(([, o]) => o.b).map(([k, o]) => `<button type="button" data-out="${k}">${o.i} ${o.b}</button>`).join('')}
       </div>
       <div id="learnMsg" class="note">${learnNote && Date.now() - learnNote.at < 10 * 60000 ? esc(learnNote.text) : ''}</div>` : '<p class="note">קודם מוסיפים בני משפחה.</p>'}
       ${recent.length ? `<table class="logs"><thead><tr><th>מתי</th><th>מי</th><th>תוצאה</th><th></th></tr></thead><tbody>
