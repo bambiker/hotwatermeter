@@ -409,15 +409,22 @@
   function fit() {
     const logs = learnableLogs(), now = Date.now();
     if (!logs.length) return [];
-    const knob = (get, set, prior, lo, hi) => ({ get, set, prior, lo, hi });
+    const knob = (get, set, prior, lo, hi, group) => ({ get, set, prior, lo, hi, group });
     const knobs = [
-      knob(() => cfg.eff, v => { cfg.eff = v; }, DEFAULTS.eff, 0.15, 1.5),
+      knob(() => cfg.eff, v => { cfg.eff = v; }, DEFAULTS.eff, 0.15, 1.5, 'heat'),
       knob(() => cfg.tau, v => { cfg.tau = v; }, DEFAULTS.tau, 10, 150)
     ];
-    if (fam.boilers.some(b => runEnd(b, now) > wx.hours[0].start)) knobs.push(knob(() => cfg.heaterEff, v => { cfg.heaterEff = v; }, DEFAULTS.heaterEff, 0.3, 2));
+    if (fam.boilers.some(b => runEnd(b, now) > wx.hours[0].start)) knobs.push(knob(() => cfg.heaterEff, v => { cfg.heaterEff = v; }, DEFAULTS.heaterEff, 0.3, 2, 'heat'));
     for (const id of new Set(logs.map(l => l.member))) {
       const m = member(id);
-      if (m) knobs.push(knob(() => need(m), v => { m.liters = v; }, cfg.perPerson, 5, 250));
+      if (m) knobs.push(knob(() => need(m), v => { m.liters = v; }, cfg.perPerson, 5, 250, 'use'));
+    }
+    // Directions to search: each factor alone, plus factors that can stand in for each other moved
+    // together (sun + boiler heating; everyone's usage), or the search stalls where one compensates
+    const moves = knobs.map(k => [k]);
+    for (const g of ['heat', 'use']) {
+      const ks = knobs.filter(k => k.group === g);
+      if (ks.length > 1) moves.push(ks);
     }
     const cost = () => negLogLik(logs) + PRIOR_WEIGHT * knobs.reduce((s, k) => s + sq(Math.log(k.get() / k.prior)), 0);
     // Multiplicative coordinate search, coarse to fine
@@ -425,13 +432,13 @@
     for (const f of [1.6, 1.25, 1.08, 1.02]) {
       for (let pass = 0, moved = true; pass < 8 && moved; pass++) {
         moved = false;
-        for (const k of knobs) {
-          const v0 = k.get();
-          for (const v of [v0 * f, v0 / f]) {
-            k.set(Math.min(k.hi, Math.max(k.lo, v)));
+        for (const ks of moves) {
+          const v0 = ks.map(k => k.get());
+          for (const g of [f, 1 / f]) {
+            ks.forEach((k, i) => k.set(Math.min(k.hi, Math.max(k.lo, v0[i] * g))));
             const c = cost();
             if (c < best - 1e-6) { best = c; moved = true; break; }
-            k.set(v0);
+            ks.forEach((k, i) => k.set(v0[i]));
           }
         }
       }
