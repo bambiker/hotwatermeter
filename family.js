@@ -260,10 +260,7 @@
   const need = (m) => (m && m.liters != null ? m.liters : cfg.perPerson);
   // °C the tank loses per liter of shower-temperature water (energy balance, fully mixed tank)
   const perLiter = () => Math.max(1, tsh() - tin()) / cfg.liters;
-  const airMean = () => {
-    const t = wx ? wx.hours.map(h => h.ta).filter(v => v != null) : [];
-    return t.length ? t.reduce((a, b) => a + b, 0) / t.length : 20;
-  };
+  const airMean = () => (wx ? wx.airMean : 20); // computed once per forecast (it's used in every simulation step)
   // Comfortable shower temperature follows the season too: ~41° when it's 13° out, ~37° at 28°
   function tsh() {
     return cfg.tshower ?? Math.round(Math.min(42, Math.max(36, 44 - 0.25 * airMean())));
@@ -322,17 +319,18 @@
     const H = wx.hours, now = Date.now(), spans = spansOf(now);
     const logs = fam.logs.filter(l => l.t >= H[0].start).sort((a, b) => a.t - b.t);
     let T = (H[0].ta ?? tin()) + 5, li = 0;
-    const pts = [], gains = {};
+    const pts = [], gains = {}, obs = [];
     for (const h of H) {
       for (let a = h.start; a < h.end; a += STEP) {
         const b = a + STEP;
         pts.push({ t: a, T });
         while (li < logs.length && logs[li].t < b && logs[li].t < stopAt) {
+          obs.push({ l: logs[li], T });
           T = applyLog(T, logs[li]);
           pts.push({ t: logs[li].t, T, log: logs[li] });
           li++;
         }
-        if (b > stopAt) return { T, pts, gains };
+        if (b > stopAt) return { T, pts, gains, obs };
         const sun = solarGain(T, h, (b - a) / HOUR);
         const g = gains[localStr(a).slice(0, 10)] ||= { total: 0, soFar: 0 };
         g.total += sun;
@@ -341,38 +339,133 @@
       }
     }
     pts.push({ t: H[H.length - 1].end, T });
-    return { T, pts, gains };
+    return { T, pts, gains, obs };
   }
 
-  // Learn from a shower outcome, using the tank state the model had just before it
-  function learn(l) {
-    const T0 = run(l.t).T;
-    const cap = capacity(T0);
+  // ---------- Learning ----------
+  // Nobody needs to know their tank: volume, collector area, angle and efficiency only matter as
+  // ratios, so the model keeps fixed defaults for them and learns lumped factors instead:
+  //   eff        – how fast this tank heats from the sun (per unit of radiation on the collector)
+  //   tau        – how fast it cools down overnight
+  //   heaterEff  – how fast the electric element heats it
+  //   liters     – per person, how much of the tank's heat one shower takes (relative to the tank)
+  // Every shower with weather data (last ~30 days) is a constraint on the tank temperature just
+  // before it: "hot to the end" → T − draw ≥ shower temp; "ran out" → T > shower temp > T − draw;
+  // "no hot water" → T ≤ shower temp. The fit finds the factors that best satisfy all of them,
+  // pulled gently toward the defaults so a few showers don't swing it.
+  // Each outcome is treated as uncertain around the threshold (σ ≈ 2.5°C): "hot to the end" when
+  // the model says the tank was barely enough counts as weaker evidence than when it was very hot.
+  const SIGMA = 2.5;
+  const PRIOR_WEIGHT = 1.5; // per (ln of the ratio to the default)²
+  const sq = (x) => x * x;
+  const cdf = (x) => 1 / (1 + Math.exp(-1.7 * x / SIGMA));
+  function outcomeProbs(T, d) {
+    const ts = tsh();
+    const full = cdf(T - d - ts), none = cdf(ts - T);
+    return { full, none, partial: Math.max(1e-6, 1 - full - none) };
+  }
+
+  // Lean re-simulation for learning: only the tank temperature just before each logged shower
+  function tempsBeforeShowers(logs) {
+    const H = wx.hours, spans = spansOf(Date.now()), out = [];
+    let T = (H[0].ta ?? tin()) + 5, li = 0;
+    for (const h of H) {
+      for (let a = h.start; a < h.end && li < logs.length; a += STEP) {
+        const b = a + STEP;
+        while (li < logs.length && logs[li].t < b) { out.push(T); T = applyLog(T, logs[li]); li++; }
+        T = step(T, h, a, b, spans, solarGain(T, h, 0.25));
+      }
+    }
+    return out;
+  }
+
+  function learnableLogs() {
+    const start = wx.hours[0].start, now = Date.now();
+    return fam.logs.filter(l => l.t >= start && l.t <= now && !l.boiler).sort((a, b) => a.t - b.t);
+  }
+
+  function negLogLik(logs) {
+    const Ts = tempsBeforeShowers(logs);
+    let e = 0;
+    logs.forEach((l, i) => { e -= Math.log(Math.max(1e-6, outcomeProbs(Ts[i], drawOf(member(l.member)))[l.outcome])); });
+    return e;
+  }
+
+  // How often the model's most likely outcome matches what was logged (shown to the family)
+  function accuracy() {
+    const logs = learnableLogs();
+    if (logs.length < 5) return null;
+    const Ts = tempsBeforeShowers(logs);
+    // right after someone had no hot water, the next one won't either – too easy to count
+    const fair = logs.map((l, i) => i).filter(i => !(i && logs[i - 1].outcome === 'none' && logs[i].t - logs[i - 1].t < 2 * HOUR));
+    if (fair.length < 5) return null;
+    const hits = fair.filter(i => {
+      const p = outcomeProbs(Ts[i], drawOf(member(logs[i].member)));
+      return Object.keys(p).reduce((a, b) => (p[a] >= p[b] ? a : b)) === logs[i].outcome;
+    }).length;
+    return { pct: Math.round(hits / fair.length * 100), n: fair.length };
+  }
+
+  function fit() {
+    const logs = learnableLogs(), now = Date.now();
+    if (!logs.length) return [];
+    const knob = (get, set, prior, lo, hi) => ({ get, set, prior, lo, hi });
+    const knobs = [
+      knob(() => cfg.eff, v => { cfg.eff = v; }, DEFAULTS.eff, 0.15, 1.5),
+      knob(() => cfg.tau, v => { cfg.tau = v; }, DEFAULTS.tau, 10, 150)
+    ];
+    if (fam.boilers.some(b => runEnd(b, now) > wx.hours[0].start)) knobs.push(knob(() => cfg.heaterEff, v => { cfg.heaterEff = v; }, DEFAULTS.heaterEff, 0.3, 2));
+    for (const id of new Set(logs.map(l => l.member))) {
+      const m = member(id);
+      if (m) knobs.push(knob(() => need(m), v => { m.liters = v; }, cfg.perPerson, 5, 250));
+    }
+    const cost = () => negLogLik(logs) + PRIOR_WEIGHT * knobs.reduce((s, k) => s + sq(Math.log(k.get() / k.prior)), 0);
+    // Multiplicative coordinate search, coarse to fine
+    let best = cost();
+    for (const f of [1.6, 1.25, 1.08, 1.02]) {
+      for (let pass = 0, moved = true; pass < 8 && moved; pass++) {
+        moved = false;
+        for (const k of knobs) {
+          const v0 = k.get();
+          for (const v of [v0 * f, v0 / f]) {
+            k.set(Math.min(k.hi, Math.max(k.lo, v)));
+            const c = cost();
+            if (c < best - 1e-6) { best = c; moved = true; break; }
+            k.set(v0);
+          }
+        }
+      }
+    }
+    const ops = [{ op: 'cfg', cfg: { eff: +cfg.eff.toFixed(3), tau: +cfg.tau.toFixed(1), heaterEff: +cfg.heaterEff.toFixed(3) } }];
+    for (const m of fam.members) {
+      const n = logs.filter(l => l.member === m.id).length;
+      if (n) ops.push({ op: 'member', m: { id: m.id, liters: Math.round(need(m)), n } });
+    }
+    return ops;
+  }
+
+  // Share of a hot (60°C) tank one shower takes, at this season's shower and mains temperatures
+  const share = (m) => Math.round(need(m) * (tsh() - tin()) / Math.max(1, 60 - tin()) / cfg.liters * 100);
+
+  // What a newly logged shower taught the model, in words
+  function lesson(before, l) {
     const m = member(l.member);
-    const est = need(m);
-    // A tank-level surprise is blamed on the electric element if it ran in the 8 hours before, else on the solar side
-    const electric = overlap(spansOf(l.t), l.t - 8 * HOUR, l.t) > 0;
-    const what = electric ? 'כיול הדוד החשמלי' : 'כיול הקולטים';
-    const tune = (up) => {
-      if (electric) cfg.heaterEff = Math.min(2, Math.max(0.3, +(cfg.heaterEff * (up ? 1.15 : 0.85)).toFixed(3)));
-      else cfg.eff = Math.min(1, Math.max(0.2, +(cfg.eff * (up ? 1.1 : 0.9)).toFixed(3)));
-    };
-    let msg = '';
-    if (l.outcome === 'full') {
-      if (T0 < tsh()) { tune(true); msg = `המודל העריך שהדוד קר מדי – ${what} עודכן כלפי מעלה.`; }
-      else if (m && est > cap) { m.liters = Math.round(est + 0.5 * (cap - est)); msg = `${m.name} כנראה צריך פחות מים – עודכן ל-${m.liters} ליטר.`; }
-    } else if (l.outcome === 'partial') {
-      if (cap < 5) { tune(true); msg = `היו קצת מים חמים למרות שהמודל העריך שאין – ${what} עודכן.`; }
-      else if (m && est < cap) { m.liters = Math.round(est + 0.5 * (cap * 1.15 - est)); msg = `${m.name} כנראה צריך יותר מים – עודכן ל-${m.liters} ליטר.`; }
-    } else if (T0 > tsh() + 2) {
-      tune(false); msg = `המודל העריך שיש מים חמים ולא היו – ${what} עודכן כלפי מטה.`;
+    const parts = [];
+    if (m && before.liters !== need(m)) {
+      const r = need(m) / before.liters;
+      if (r > 1.08) parts.push(`${m.name} צורך/ת יותר ממה שחשבנו – עכשיו כ-${share(m)}% מדוד חם למקלחת.`);
+      else if (r < 0.93) parts.push(`${m.name} צורך/ת פחות ממה שחשבנו – עכשיו כ-${share(m)}% מדוד חם למקלחת.`);
     }
-    if (m) {
-      if (m.liters != null) m.liters = Math.min(200, Math.max(5, m.liters));
-      m.n = (m.n || 0) + 1;
-    }
-    const est0 = `לפי המודל היו בדוד ~${Math.round(T0)}°C.`;
-    return est0 + ' ' + (msg || 'תואם את ההערכה – לא היה צריך לעדכן.');
+    const se = cfg.eff / before.eff;
+    if (se > 1.08) parts.push('הדוד מתחמם מהשמש מהר יותר ממה שחשבנו.');
+    else if (se < 0.93) parts.push('הדוד מתחמם מהשמש לאט יותר ממה שחשבנו.');
+    const st = cfg.tau / before.tau;
+    if (st > 1.1) parts.push('הדוד שומר חום בלילה טוב יותר ממה שחשבנו.');
+    else if (st < 0.9) parts.push('הדוד מתקרר בלילה מהר יותר ממה שחשבנו.');
+    const sh = cfg.heaterEff / before.heaterEff;
+    if (sh > 1.08) parts.push('הדוד החשמלי מחמם מהר יותר ממה שחשבנו.');
+    else if (sh < 0.93) parts.push('הדוד החשמלי מחמם לאט יותר ממה שחשבנו.');
+    return parts.length ? parts.join(' ') : 'תואם את מה שכבר למדנו.';
   }
 
   // ---------- Time helpers (location-local time) ----------
@@ -451,7 +544,7 @@
     return `<div class="slot ${status}">
       <div class="slot-h"><b>${title}</b> <span class="note">${dayWord(t, now)} ${ltr(hhmm(t))}</span></div>
       <div class="slot-t">${ltr('~' + fmt(p.T0) + '°C')}</div>
-      <ul class="who">${p.rows.map(r => `<li>${ICON[r.st]} ${esc(r.m.name)} <span class="note">${ltr(need(r.m) + ' ל׳')}</span></li>`).join('')}</ul>
+      <ul class="who">${p.rows.map(r => `<li>${ICON[r.st]} ${esc(r.m.name)} <span class="note">${ltr(share(r.m) + '%')}</span></li>`).join('')}</ul>
       ${advice}
     </div>`;
   }
@@ -555,12 +648,12 @@
 
     <details class="card fam" id="famBox" ${fam.members.length ? '' : 'open'}>
       <summary>👨‍👩‍👧 בני המשפחה</summary>
-      <p class="note">כמה ליטר מים ב-${tsh()}°C כל אחד צריך למקלחת. בהתחלה משתמשים בברירת המחדל (${cfg.perPerson} ל׳), ואחרי כל מקלחת שנרשמת המספר מתעדכן.</p>
-      ${fam.members.length ? `<table class="members"><thead><tr><th>שם</th><th>ליטר למקלחת</th><th>נלמד מ-</th><th>בוקר</th><th>ערב</th><th></th><th></th></tr></thead><tbody>
+      <p class="note">לא צריך לדעת כלום על הדוד. אחרי כל מקלחת רושמים אם היו מים חמים עד הסוף, והאתר לומד כמה כל אחד צורך ביחס לדוד שלכם – לפי מי התקלח לפניו ולפי השמש באותו יום. עד שיש מספיק מקלחות משתמשים בהערכה של ${cfg.perPerson} ליטר.</p>
+      ${(() => { const acc = accuracy(); return acc ? `<p class="acc">🎯 המודל צודק ב-${ltr(acc.pct + '%')} מ-${ltr(acc.n)} המקלחות של החודש האחרון</p>` : ''; })()}
+      ${fam.members.length ? `<table class="members"><thead><tr><th>שם</th><th>מדוד חם למקלחת</th><th>בוקר</th><th>ערב</th><th></th><th></th></tr></thead><tbody>
         ${fam.members.map((m, i) => `<tr data-id="${m.id}">
           <td><input class="m-name" value="${esc(m.name)}" aria-label="שם"></td>
-          <td><input class="m-liters" type="number" min="5" max="200" step="1" value="${m.liters ?? ''}" placeholder="${cfg.perPerson} (ברירת מחדל)" aria-label="ליטר"></td>
-          <td>${m.n ? ltr(m.n) + ' מקלחות' : '<span class="note">ברירת מחדל</span>'}</td>
+          <td>${ltr('~' + share(m) + '%')}<div class="note">${m.n ? `נלמד מ-${ltr(m.n)}` : 'עדיין הערכה'}</div></td>
           <td><input class="m-slot" data-slot="morning" type="checkbox" ${m.skip?.morning ? '' : 'checked'} aria-label="מתקלח בבוקר"></td>
           <td><input class="m-slot" data-slot="evening" type="checkbox" ${m.skip?.evening ? '' : 'checked'} aria-label="מתקלח בערב"></td>
           <td><button type="button" class="x" data-up="${i}" ${i ? '' : 'disabled'} aria-label="הזזה למעלה">▲</button></td>
@@ -606,25 +699,30 @@
       <summary>${sync.conf ? '⚙️ הגדרות המשפחה והדוד' : '⚙️ הגדרות הדוד'}</summary>
       ${sync.conf ? '<div class="home-loc"><div class="k">📍 מיקום הבית – משותף לכל המשפחה</div><div id="locSlot"></div></div>' : ''}
       <div class="grid-inputs">
+        <label>שעת מקלחות בוקר<input data-cfg="morning" type="time" value="${cfg.morning}"></label>
+        <label>שעת מקלחות ערב<input data-cfg="evening" type="time" value="${cfg.evening}"></label>
+      </div>
+      <details class="adv">
+        <summary>מתקדם – לא חובה, האתר לומד את הדוד לבד</summary>
+        <p class="note">אם אתם יודעים פרטים על הדוד – אפשר להזין, וזה יעזור ללמידה להתחיל קרוב יותר. ערכים שמסומנים "נלמד" מתעדכנים מהמקלחות שנרשמות.</p>
+      <div class="grid-inputs">
         <label>נפח הדוד (ליטר)<input data-cfg="liters" type="number" min="30" step="10" value="${cfg.liters}"></label>
         <label>שטח קולטים (מ״ר)<input data-cfg="area" type="number" min="0.5" step="0.1" value="${cfg.area}"></label>
         <label>זווית הקולטים (מעלות מהאופק)<input data-cfg="tilt" type="number" min="0" max="90" step="5" value="${cfg.tilt}"></label>
         <label>כיוון הקולטים<select data-cfg="azimuth">${[[0, 'דרום'], [-45, 'דרום-מזרח'], [45, 'דרום-מערב'], [-90, 'מזרח'], [90, 'מערב']]
           .map(([v, t]) => `<option value="${v}" ${+cfg.azimuth === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
-        <label>נצילות / כיול (נלמד אוטומטית)<input data-cfg="eff" type="number" min="0.2" max="1" step="0.01" value="${cfg.eff}"></label>
+        <label>קצב חימום מהשמש (נלמד)<input data-cfg="eff" type="number" min="0.2" max="1" step="0.01" value="${cfg.eff}"></label>
         <label>הפסדי חום של הקולט (W/m²·°C)<input data-cfg="ul" type="number" min="0" max="20" step="0.5" value="${cfg.ul}"></label>
         <label>טמפ׳ מים קרים (°C)<input data-cfg="tin" type="number" step="1" value="${cfg.tin ?? ''}" placeholder="אוטומטי לפי העונה (~${tin()}°)"></label>
         <label>טמפ׳ מקלחת (°C)<input data-cfg="tshower" type="number" step="1" value="${cfg.tshower ?? ''}" placeholder="אוטומטי לפי העונה (~${tsh()}°)"></label>
-        <label>קצב התקררות – קבוע זמן (שעות)<input data-cfg="tau" type="number" min="5" step="1" value="${cfg.tau}"></label>
+        <label>שמירת חום בלילה – קבוע זמן בשעות (נלמד)<input data-cfg="tau" type="number" min="5" step="1" value="${cfg.tau}"></label>
         <label>הספק גוף חימום (kW)<input data-cfg="heaterKw" type="number" min="0.5" step="0.5" value="${cfg.heaterKw}"></label>
-        <label>יעילות הדוד החשמלי (נלמד אוטומטית)<input data-cfg="heaterEff" type="number" min="0.3" max="2" step="0.05" value="${cfg.heaterEff}"></label>
+        <label>קצב חימום של הדוד החשמלי (נלמד)<input data-cfg="heaterEff" type="number" min="0.3" max="2" step="0.05" value="${cfg.heaterEff}"></label>
         <label>טרמוסטט הדוד החשמלי (°C)<input data-cfg="heaterMax" type="number" step="1" value="${cfg.heaterMax}"></label>
         <label>טמפ׳ מקסימלית של הדוד – ווסת (°C)<input data-cfg="tankMax" type="number" min="40" max="95" step="1" value="${cfg.tankMax}"></label>
-        <label>ברירת מחדל לאדם (ליטר)<input data-cfg="perPerson" type="number" min="5" step="5" value="${cfg.perPerson}"></label>
-        <label>שעת מקלחות בוקר<input data-cfg="morning" type="time" value="${cfg.morning}"></label>
-        <label>שעת מקלחות ערב<input data-cfg="evening" type="time" value="${cfg.evening}"></label>
+        <label>הערכה התחלתית לאדם (ליטר מים במקלחת)<input data-cfg="perPerson" type="number" min="5" step="5" value="${cfg.perPerson}"></label>
       </div>
-      <p class="note">קבוע זמן 40 שעות ≈ דוד מבודד היטב שמאבד כ-10° בלילה. אם המים בבוקר קרים מהצפוי – להקטין.</p>
+      </details>
       <div class="add-row">
         <button type="button" id="exportBtn">⬇️ ייצוא נתונים</button>
         <label class="file-btn">⬆️ ייבוא נתונים<input id="importFile" type="file" accept="application/json" hidden></label>
@@ -719,11 +817,16 @@
       const v = $('logTime').value;
       const t = v ? Date.parse(v + ':00Z') - wx.off : Date.now();
       const l = { id: uid(), member: $('logWho').value, t, outcome: b.dataset.out };
-      learnNote = { text: 'נרשם ✓ ' + learn(l), at: Date.now() }; // learn() updates the member's liters / cfg in place
+      const T0 = run(l.t).T;
       const m = member(l.member);
-      commit([{ op: 'log', l }, { op: 'member', m: { id: m.id, liters: m.liters, n: m.n } }, { op: 'cfg', cfg: { eff: cfg.eff, heaterEff: cfg.heaterEff } }]);
+      const before = { liters: need(m), eff: cfg.eff, tau: cfg.tau, heaterEff: cfg.heaterEff };
+      fam.logs.push(l);
+      const ops = fit(); // adjusts cfg and members in place, and returns them as ops to share
+      learnNote = { text: `נרשם ✓ לפי המודל היו בדוד ~${Math.round(T0)}°C. ${lesson(before, l)}`, at: Date.now() };
+      commit([{ op: 'log', l }, ...ops]);
     } else if (b.dataset.delLog) {
-      commit([{ op: 'delLog', id: b.dataset.delLog }]);
+      fam.logs = fam.logs.filter(l => l.id !== b.dataset.delLog);
+      commit([{ op: 'delLog', id: b.dataset.delLog }, ...fit()]);
     } else if (b.dataset.delM) {
       const m = member(b.dataset.delM);
       if (!confirm(`למחוק את ${m.name}?`)) return;
@@ -742,7 +845,7 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     } else if (b.id === 'resetLearn') {
       if (!confirm('לאפס את מה שנלמד (ליטרים לכל אחד וכיול הדוד)? יומן המקלחות יישמר.')) return;
-      commit([...fam.members.map(m => ({ op: 'member', m: { id: m.id, liters: null, n: 0 } })), { op: 'cfg', cfg: { eff: DEFAULTS.eff, heaterEff: DEFAULTS.heaterEff } }]);
+      commit([...fam.members.map(m => ({ op: 'member', m: { id: m.id, liters: null, n: 0 } })), { op: 'cfg', cfg: { eff: DEFAULTS.eff, heaterEff: DEFAULTS.heaterEff, tau: DEFAULTS.tau } }]);
     } else if (b.id === 'connectBtn') {
       b.disabled = true; b.textContent = 'מתחבר…';
       connect($('syncUrl').value, $('syncKey').value);
@@ -804,7 +907,6 @@
       const m = member(row.dataset.id);
       const patch = { id: m.id };
       if (el.classList.contains('m-name')) { if (el.value.trim()) patch.name = el.value.trim(); }
-      else if (el.classList.contains('m-liters')) patch.liters = el.value === '' ? null : Math.min(200, Math.max(5, +el.value));
       else if (el.classList.contains('m-slot')) patch.skip = Object.assign({}, m.skip, { [el.dataset.slot]: !el.checked });
       commit([{ op: 'member', m: patch }]);
     } else if (el.id === 'importFile' && el.files[0]) {
@@ -819,8 +921,10 @@
   function onWeather(d) {
     const off = d.utc_offset_seconds * 1000;
     const gti = d.hourly.tank_gti || d.hourly.global_tilted_irradiance || d.hourly.shortwave_radiation; // for this family's collector
+    const temps = d.hourly.temperature_2m.filter(v => v != null);
     wx = {
       off, lat: d.latitude, lon: d.longitude,
+      airMean: temps.length ? temps.reduce((a, b) => a + b, 0) / temps.length : 20,
       hours: d.hourly.time.map((t, i) => {
         const end = Date.parse(t + ':00Z') - off;
         return { start: end - HOUR, end, gti: gti[i], ta: d.hourly.temperature_2m?.[i] };
