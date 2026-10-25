@@ -276,6 +276,12 @@
     const nowUtc = Date.now();
     const h = data.hourly;
     const byDate = new Map();
+    // Typical air temperature for each hour of the day over the fetched month: the clear-day ceiling
+    // uses it, so it reflects the season rather than whether today happened to be warm or cold
+    const typical = Array.from({ length: 24 }, (_, hr) => {
+      const v = h.time.map((t, i) => (+t.slice(11, 13) === hr ? h.temperature_2m[i] : null)).filter(x => x != null);
+      return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 20;
+    });
     h.time.forEach((t, i) => {
       // t is local wall time "YYYY-MM-DDTHH:MM"; convert to a UTC instant
       const endUtc = Date.parse(t + ':00Z') - off;
@@ -285,6 +291,7 @@
         hour: +t.slice(11, 13),
         gti: (h.global_tilted_irradiance || h.shortwave_radiation)[i] ?? 0, // on the standard collector
         ta: h.temperature_2m[i] ?? 20,
+        taTypical: typical[+t.slice(11, 13)],
         cloud: h.cloud_cover[i],
         clear: clearSkyHourMean(endUtc, data.latitude, data.longitude, STD.tilt, STD.az),
         future: endUtc > nowUtc
@@ -299,7 +306,7 @@
       const actual = sum(hours, x => x.gti) / 1000;     // kWh/m² on the collector
       const heat = sum(hours, x => useful(x.gti, x.ta)) / 1000; // kWh/m² of useful heat
       const heatSoFar = sum(hours.filter(x => !x.future), x => useful(x.gti, x.ta)) / 1000;
-      const clearHeat = sum(hours, x => useful(x.clear, x.ta)) / 1000;
+      const clearHeat = sum(hours, x => useful(x.clear, x.taTypical)) / 1000;
       const daylight = hours.filter(x => x.clear > 20);
       const cloudAvg = daylight.length ? sum(daylight, x => x.cloud ?? 0) / daylight.length : null;
       return {
