@@ -309,6 +309,7 @@
   function applyLog(T, l) {
     if (l.boiler) T = Math.max(T, cfg.heaterMax); // showers logged before boiler runs had their own log
     const d = drawOf(member(l.member)), ts = tsh();
+    if (l.outcome === 'planned') return Math.max(T - d, tin()); // a what-if shower: nothing observed
     const within = (lo, hi) => Math.min(hi, Math.max(lo, T));
     if (l.outcome === 'plenty') T = within(ts + d + EDGE, Infinity);
     else if (l.outcome === 'edge') T = within(ts + d, ts + d + EDGE);
@@ -319,32 +320,35 @@
   }
 
   // Simulates in 15-minute steps; returns the tank temperature just before stopAt, the trace,
-  // and the solar heating per local date ({ total, soFar } in °C)
-  function run(stopAt = Infinity) {
+  // and the solar heating per local date ({ total, soFar } in °C). `extra`: what-if showers
+  // ({ t, member, outcome: 'planned' }) added on top of the logged ones.
+  function run(stopAt = Infinity, extra = []) {
     const H = wx.hours, now = Date.now(), spans = spansOf(now);
-    const logs = fam.logs.filter(l => l.t >= H[0].start).sort((a, b) => a.t - b.t);
+    const logs = fam.logs.filter(l => l.t >= H[0].start).concat(extra).sort((a, b) => a.t - b.t);
     let T = (H[0].ta ?? tin()) + 5, li = 0;
-    const pts = [], gains = {}, obs = [];
+    const pts = [], byDay = {}, obs = [];
+    const gainsByDate = () => Object.fromEntries(Object.entries(byDay).map(([k, g]) => [new Date(k * DAY).toISOString().slice(0, 10), g]));
     for (const h of H) {
       for (let a = h.start; a < h.end; a += STEP) {
         const b = a + STEP;
         pts.push({ t: a, T });
         while (li < logs.length && logs[li].t < b && logs[li].t < stopAt) {
-          obs.push({ l: logs[li], T });
-          T = applyLog(T, logs[li]);
-          pts.push({ t: logs[li].t, T, log: logs[li] });
-          li++;
+          const l = logs[li++];
+          if (l.outcome === 'planned') { T = applyLog(T, l); continue; }
+          obs.push({ l, T });
+          T = applyLog(T, l);
+          pts.push({ t: l.t, T, log: l });
         }
-        if (b > stopAt) return { T, pts, gains, obs };
+        if (b > stopAt) return { T, pts, gains: gainsByDate(), obs };
         const sun = solarGain(T, h, (b - a) / HOUR);
-        const g = gains[localStr(a).slice(0, 10)] ||= { total: 0, soFar: 0 };
+        const g = byDay[Math.floor((a + wx.off) / DAY)] ||= { total: 0, soFar: 0 };
         g.total += sun;
         if (b <= now) g.soFar += sun;
         T = step(T, h, a, b, spans, sun);
       }
     }
     pts.push({ t: H[H.length - 1].end, T });
-    return { T, pts, gains, obs };
+    return { T, pts, gains: gainsByDate(), obs };
   }
 
   // ---------- Learning ----------
@@ -504,10 +508,11 @@
   }
 
   // ---------- Planning ----------
-  function plan(t, slot) {
-    const T0 = run(t).T;
+  // extra: what-if showers earlier in the day; away: members who won't shower in this slot
+  function plan(t, slot, extra = [], away = new Set()) {
+    const T0 = run(t, extra).T;
     let T = T0;
-    const who = fam.members.filter(m => !m.skip || !m.skip[slot]);
+    const who = fam.members.filter(m => (!m.skip || !m.skip[slot]) && !away.has(m.id));
     const rows = who.map(m => {
       const d = drawOf(m);
       const st = T - d >= tsh() - 0.05 ? 'ok' : T > tsh() ? 'partial' : 'cold';
@@ -542,6 +547,64 @@
       <div class="note">${yday ? `אתמול באותה שעה: ${say(yday)}` : ''} · מקלחת ב-${ltr(tsh() + '°')}, מים מהברז ${ltr(tin() + '°')}</div>
     </div>`;
     return { html, tonight, yday };
+  }
+
+  // ---------- When to shower: move someone to midday so the sun can make up for it ----------
+  // A midday shower lets the sun reheat the tank before the evening (and a cooler tank takes up
+  // solar heat better), so it costs the evening less than the same shower at night. When tonight
+  // isn't enough for everyone, try moving one or two people to a midday hour and keep the move
+  // that gives the most hot showers overall; for equal results prefer the latest (most convenient) hour.
+  function timingTip(now) {
+    const tEve = nextAt(cfg.evening, now - 3 * HOUR);
+    if (tEve - now > 12 * HOUR) return null;
+    const base = plan(tEve, 'evening');
+    const ok = (p) => p.rows.filter(r => r.st === 'ok').length;
+    if (!base.total || ok(base) === base.total) return null;
+    const day0 = dayStart(now), hours = [];
+    for (let h = 9; h <= 15; h++) {
+      const t = day0 + h * HOUR;
+      if (t > now + 15 * 60000 && t < tEve - 2 * HOUR) hours.push(t);
+    }
+    if (!hours.length) return null;
+    const score = (moves) => {
+      const extra = moves.map(mv => ({ t: mv.t, member: mv.m.id, outcome: 'planned' }));
+      const p = plan(tEve, 'evening', extra, new Set(moves.map(mv => mv.m.id)));
+      // each moved person needs a hot shower at their hour too
+      const middayOk = moves.filter(mv => run(mv.t, extra.filter(e => e.t < mv.t)).T - drawOf(mv.m) >= tsh() - 0.05).length;
+      return { hot: ok(p) + middayOk, middayOk, moves };
+    };
+    const candidates = base.rows.map(r => r.m);
+    let best = { hot: ok(base), moves: [] };
+    // more hot showers wins; then fewer people asked to move; then the later (more convenient) hour
+    const key = (c) => [c.hot, -c.moves.length, Math.min(...c.moves.map(x => x.t))];
+    const better = (a, b) => { const ka = key(a), kb = key(b); for (let i = 0; i < 3; i++) if (ka[i] !== kb[i]) return ka[i] > kb[i]; return false; };
+    const consider = (moves) => {
+      const c = score(moves);
+      if (c.middayOk === moves.length && c.hot > ok(base) && (!best.moves.length || better(c, best))) best = c;
+    };
+    for (const m of candidates) for (const t of hours) consider([{ m, t }]);
+    // one person often saves only a few degrees; two people at midday may free enough for the rest
+    if (best.hot < base.total && candidates.length > 2) {
+      const few = hours.length <= 3 ? hours : [hours[0], hours[Math.floor(hours.length / 2)], hours[hours.length - 1]];
+      for (let i = 0; i < candidates.length; i++) for (let j = i + 1; j < candidates.length; j++)
+        for (const t1 of few) for (const t2 of few) consider([{ m: candidates[i], t: t1 }, { m: candidates[j], t: t2 }]);
+    }
+    if (!best.moves.length) return null;
+    return { moves: best.moves.sort((a, b) => a.t - b.t), hot: best.hot, total: base.total, before: ok(base) };
+  }
+
+  let tipCache = { key: '', tip: null };
+  function timingTipHtml(now) {
+    const key = JSON.stringify([Math.floor(now / (15 * 60000)), fam.logs.length, fam.boilers, fam.members.map(m => [m.id, need(m), m.skip]),
+      cfg.eff, cfg.tau, cfg.heaterEff, cfg.evening, wx.hours.length, wx.hours[0].start]);
+    if (tipCache.key !== key) tipCache = { key, tip: timingTip(now) };
+    const tip = tipCache.tip;
+    if (!tip) return '';
+    const byTime = {};
+    tip.moves.forEach(mv => { (byTime[mv.t] ||= []).push(esc(mv.m.name)); });
+    const who = Object.entries(byTime).map(([t, names]) => `${names.join(' ו')} עד ${ltr(hhmm(+t))}`).join(', ו');
+    const plural = tip.moves.length > 1 ? 'יתקלחו' : 'יתקלח/תתקלח';
+    return `<p class="tip-when">💡 אם ${who} ${plural} במהלך היום במקום בערב – ${tip.hot === tip.total ? 'יספיק לכולם' : `יספיק ל-${ltr(tip.hot)} מתוך ${ltr(tip.total)}`} בלי להדליק דוד (במקום ${ltr(tip.before)}). השמש תספיק לחמם את הדוד מחדש עד הערב.</p>`;
   }
 
   // ---------- Rendering ----------
@@ -608,6 +671,7 @@
       <div class="tank-now">
         <div><div class="k">טמפ׳ משוערת עכשיו</div><div class="big">${ltr('~' + fmt(cur) + '°C')}</div></div>
         ${sh.html}
+        ${timingTipHtml(now)}
         <div class="note drop">כל מקלחת של ${ltr(cfg.perPerson)} ליטר מכניסה לדוד מים קרים ומורידה אותו בכ-${ltr(fmt(cfg.perPerson * perLiter(), 1) + '°')}</div>
       </div>
       ${sunToday && sunToday.total >= 0.5 ? `<p class="note">☀️ השמש מוסיפה לדוד היום כ-${ltr('+' + Math.round(sunToday.total) + '°')}</p>` : ''}
