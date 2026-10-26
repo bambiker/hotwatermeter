@@ -93,7 +93,9 @@
       // text/plain body → no CORS preflight (same as the family log)
       const r = await fetch(url, { method: 'POST', body: JSON.stringify({ action: 'contact', name: $('name').value.trim(), email, message, website: $('website').value }) });
       const j = await r.json();
-      if (j.error) throw new Error(j.error === 'too many messages today' ? 'נשלחו היום יותר מדי הודעות – נסו מחר.' : j.error);
+      // 'bad key' comes from a server deployed before the contact form existed
+      if (j.error) throw new Error(j.error === 'too many messages today' ? 'נשלחו היום יותר מדי הודעות – נסו מחר.'
+        : j.error === 'bad key' ? 'השרת עוד לא עודכן לגרסה שתומכת בטופס (צריך לפרסם גרסה חדשה של הסקריפט).' : j.error);
       $('contact').reset();
       show('✅ ההודעה נשלחה, תודה!', 'ok');
     } catch (err) {
