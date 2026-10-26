@@ -59,6 +59,15 @@
   main { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
   h1 { font-size: 1.6rem; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
   h1 .logo { width: 44px; height: 44px; }
+  .install { margin-inline-start: auto; font-size: .85rem; font-weight: 600; padding: 4px 12px; border-radius: 999px; border-color: var(--sun); color: var(--sun); }
+  .install-help { margin-bottom: 16px; font-size: .92rem; }
+  .install-help p { margin: 0 0 6px; }
+  .summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px; margin-bottom: 16px; text-decoration: none; color: inherit; border: 2px solid var(--sun); }
+  .summary .k { color: var(--ink-3); font-size: .8rem; }
+  .summary .sum-temp { font-size: 2.2rem; font-weight: 700; color: var(--hot); line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .summary .sum-n { font-size: 1.35rem; font-weight: 700; }
+  .summary .sum-n.good { color: var(--good); } .summary .sum-n.mid { color: var(--mid); } .summary .sum-n.bad { color: var(--bad); }
+  .summary .sum-more { margin-inline-start: auto; color: var(--accent); font-size: .85rem; align-self: flex-end; }
   .sub { color: var(--ink-2); margin: 0 0 20px; }
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
   .loc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
@@ -189,7 +198,8 @@
 </head>
 <body>
 <main>
-  <h1><img src="logo.svg" alt="" class="logo">מד מים חמים</h1>
+  <h1><img src="logo.svg" alt="" class="logo">מד מים חמים<button type="button" id="install" class="install" hidden>📲 התקנה</button></h1>
+  <div id="installHelp" class="card install-help" hidden></div>
   <p class="sub">כמה שמש הייתה היום, כמה חמים המים בדוד, ומי יכול להתקלח בלי להדליק דוד – לומד מכל מקלחת שנרשמת. <a href="faq.html">❓ שאלות ותשובות</a></p>
 
   <p id="famPlace" class="note" hidden></p>
@@ -205,6 +215,7 @@
 
   <noscript><p class="card">האתר צריך JavaScript כדי לחשב את מצב הדוד לפי מזג האוויר.</p></noscript>
   <div id="welcome"></div>
+  <div id="summary"></div>
   <div id="status" class="note"></div>
   <div class="days" id="days"></div>
 
@@ -561,6 +572,28 @@
     load();
   }
 })();
+</script>
+<script>
+  // Install as an app: Chrome/Android give a prompt; iPhone needs Share → Add to Home Screen
+  (() => {
+    const btn = document.getElementById('install'), help = document.getElementById('installHelp');
+    const installed = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+    if (installed) return;
+    let deferred = null;
+    addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferred = e; btn.hidden = false; });
+    addEventListener('appinstalled', () => { btn.hidden = true; help.hidden = true; });
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (ios || /android|mobile/i.test(navigator.userAgent)) btn.hidden = false; // offer instructions even before/without the prompt
+    btn.addEventListener('click', async () => {
+      if (deferred) { deferred.prompt(); await deferred.userChoice; deferred = null; return; }
+      help.innerHTML = ios
+        ? '<p><b>התקנה באייפון:</b> לוחצים על כפתור השיתוף <span dir="ltr">⬆️</span> בתחתית Safari ← "הוסף למסך הבית" ← "הוסף".</p>'
+        : '<p><b>התקנה:</b> בתפריט הדפדפן (⋮) בוחרים "התקנת אפליקציה" או "הוספה למסך הבית".</p>';
+      help.innerHTML += '<p class="note">האתר יופיע במסך הבית עם הלוגו, ויפתח כמו אפליקציה.</p>';
+      help.hidden = !help.hidden;
+    });
+    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  })();
 </script>
 <script src="config.js"></script>
 <script src="family.js"></script>

@@ -36,4 +36,5 @@
 ## SEO
 - כותרת, תיאור, כתובת קנונית ותגיות שיתוף (Open Graph, `og-image.png`) בכל דף; נתונים מובנים: `WebApplication` בדף הראשי ו-`FAQPage` בשאלות ותשובות.
 - **אחרי עריכת `faq.html`** מריצים `python3 tools/build_faq_ld.py` כדי לעדכן את הנתונים המובנים לפי השאלות בדף.
+- **התקנה כאפליקציה**: כפתור "📲 התקנה" בכותרת (Chrome/Android – חלון התקנה; אייפון – הוראות). `sw.js` מאפשר התקנה ופתיחה בלי רשת (רשת קודם, ואם אין – העותק האחרון; לא שומר נתוני מזג אוויר או יומן).
 - `sitemap.xml` – מגישים ב-Google Search Console (נכס מסוג URL prefix: `https://bambiker.github.io/hotwatermeter/`). `robots.txt` לא נוסף כי הוא פועל רק בשורש הדומיין.
