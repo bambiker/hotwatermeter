@@ -32,3 +32,8 @@
 
 ## לוגו
 `logo.svg` (בכותרת ובכרטיסיית הדפדפן), ו-`apple-touch-icon.png` / `icon-192.png` / `icon-512.png` (אייקון למסך הבית, דרך `manifest.webmanifest`) נוצרים מאותו ציור. כדי להחליף לוגו מחליפים את ארבעת הקבצים.
+
+## SEO
+- כותרת, תיאור, כתובת קנונית ותגיות שיתוף (Open Graph, `og-image.png`) בכל דף; נתונים מובנים: `WebApplication` בדף הראשי ו-`FAQPage` בשאלות ותשובות.
+- **אחרי עריכת `faq.html`** מריצים `python3 tools/build_faq_ld.py` כדי לעדכן את הנתונים המובנים לפי השאלות בדף.
+- `sitemap.xml` – מגישים ב-Google Search Console (נכס מסוג URL prefix: `https://bambiker.github.io/hotwatermeter/`). `robots.txt` לא נוסף כי הוא פועל רק בשורש הדומיין.

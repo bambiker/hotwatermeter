@@ -3,13 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>מד מים חמים</title>
+<title>מתי להדליק את הדוד? מחשבון דוד שמש לפי מזג האוויר | מד מים חמים</title>
+<meta name="description" content="כמה מקלחות חמות יהיו הערב בדוד השמש? מחשבון חינמי לפי השמש והעננים אצלכם: כמה דקות להדליק את הדוד החשמלי, מתי הכי כדאי להתקלח – ולומד את הדוד והמשפחה שלכם.">
+<link rel="canonical" href="https://bambiker.github.io/hotwatermeter/">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="he_IL">
+<meta property="og:site_name" content="מד מים חמים">
+<meta property="og:title" content="מתי להדליק את הדוד? מחשבון דוד שמש לפי מזג האוויר | מד מים חמים">
+<meta property="og:description" content="כמה מקלחות חמות יהיו הערב בדוד השמש? מחשבון חינמי לפי השמש והעננים אצלכם: כמה דקות להדליק את הדוד החשמלי, מתי הכי כדאי להתקלח – ולומד את הדוד והמשפחה שלכם.">
+<meta property="og:url" content="https://bambiker.github.io/hotwatermeter/">
+<meta property="og:image" content="https://bambiker.github.io/hotwatermeter/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="logo.svg" type="image/svg+xml">
 <link rel="icon" href="icon-192.png" type="image/png" sizes="192x192">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#e08a00">
-<meta name="description" content="ציון יומי לקרינת השמש (Open-Meteo) – היום מול אתמול – להערכת חימום הדוד">
 <style>
   :root {
     --bg: #f7f6f3;
@@ -110,6 +121,10 @@
   .showers .k { color: var(--ink-3); font-size: .8rem; }
   .showers .big2.good { color: var(--good); } .showers .big2.mid { color: var(--mid); } .showers .big2.bad { color: var(--bad); }
   .acc { font-weight: 600; margin: 4px 0 8px; }
+  .about { margin-top: 28px; color: var(--ink-2); font-size: .92rem; }
+  .about h2 { font-size: 1.05rem; color: var(--ink); margin: 0 0 6px; }
+  .about ul { padding-inline-start: 20px; margin: 6px 0; }
+  .about a { color: var(--accent); }
   .welcome { margin-bottom: 16px; border: 2px solid var(--sun); }
   .welcome h2 { font-size: 1.15rem; margin: 0 0 8px; }
   .welcome p { margin: 0 0 10px; }
@@ -154,6 +169,23 @@
   footer { color: var(--ink-3); font-size: .8rem; margin-top: 24px; }
   footer a { color: var(--accent); }
 </style>
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@type": "WebApplication",
+ "name": "מד מים חמים",
+ "url": "https://bambiker.github.io/hotwatermeter/",
+ "inLanguage": "he",
+ "applicationCategory": "UtilitiesApplication",
+ "operatingSystem": "Any",
+ "offers": {
+  "@type": "Offer",
+  "price": "0",
+  "priceCurrency": "ILS"
+ },
+ "description": "כמה מקלחות חמות יהיו הערב בדוד השמש? מחשבון חינמי לפי השמש והעננים אצלכם: כמה דקות להדליק את הדוד החשמלי, מתי הכי כדאי להתקלח – ולומד את הדוד והמשפחה שלכם."
+}
+</script>
 </head>
 <body>
 <main>
@@ -171,6 +203,7 @@
     <div id="results" style="flex-basis:100%"></div>
   </div></div>
 
+  <noscript><p class="card">האתר צריך JavaScript כדי לחשב את מצב הדוד לפי מזג האוויר.</p></noscript>
   <div id="welcome"></div>
   <div id="status" class="note"></div>
   <div class="days" id="days"></div>
@@ -179,11 +212,23 @@
 
   <div id="family"></div>
 
+  <section class="about">
+    <h2>מחשבון דוד שמש: כמה מים חמים יהיו הערב?</h2>
+    <p>מד מים חמים בודק את תחזית השמש והעננים במקום שלכם (נתוני <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>), ומעריך כמה הדוד מתחמם היום ולכמה מקלחות חמות הוא יספיק הערב – בלי להדליק את הדוד החשמלי.</p>
+    <ul>
+      <li><b>מתי להדליק את הדוד וכמה זמן</b> – אם הערב לא יספיק לכולם, האתר אומר כמה דקות להדליק לפני המקלחות.</li>
+      <li><b>מתי הכי כדאי להתקלח</b> – כשעוד יש שמש, מקלחת במהלך היום משאירה זמן לשמש לחמם את הדוד מחדש עד הערב.</li>
+      <li><b>לומד את הדוד והמשפחה שלכם</b> – לא צריך לדעת את גודל הדוד או הקולטים: אחרי כל מקלחת רושמים אם היו מים חמים עד הסוף, והאתר מדייק.</li>
+      <li><b>יומן משותף למשפחה</b> – כל בני הבית רושמים מהטלפון שלהם, בחינם.</li>
+    </ul>
+    <p>שאלות נפוצות: <a href="faq.html#how-long">כמה זמן להדליק את הדוד?</a> · <a href="faq.html#heat-each-or-all">להדליק לפני כל אחד או לכולם ביחד?</a> · <a href="faq.html#best-time">באיזו שעה הכי כדאי להתקלח?</a> · <a href="faq.html">עוד שאלות על דוד שמש</a></p>
+  </section>
+
   <footer>
     <a href="faq.html">❓ שאלות ותשובות על דוד שמש</a> · <a href="contact.html">✉️ צרו קשר</a> ·
-    נתונים: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (shortwave_radiation – קרינה גלובלית על משטח אופקי, ממוצע שעתי).
-    ה"יום הבהיר" מחושב לפי מודל Haurwitz ממיקום השמש. שעות היום שעוד לא עברו הן תחזית.
-    טמפ׳ הדוד היא סימולציה: חימום מהשמש לפי הקרינה, התקררות לפי טמפ׳ האוויר, ותיקון לפי המקלחות שנרשמו.
+    נתונים: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> – קרינה על קולט מוטה, עננות וטמפ׳ אוויר.
+    המדד מחושב לקולט סטנדרטי (45° לדרום, מים ל-50°), ה"יום הבהיר" לפי מודל Haurwitz. שעות שעוד לא עברו הן תחזית.
+    טמפ׳ הדוד היא סימולציה שלומדת מהמקלחות שנרשמות.
   </footer>
 </main>
 
