@@ -512,7 +512,7 @@
   function plan(t, slot, extra = [], away = new Set()) {
     const T0 = run(t, extra).T;
     let T = T0;
-    const who = fam.members.filter(m => (!m.skip || !m.skip[slot]) && !away.has(m.id));
+    const who = fam.members.filter(m => !isGeneric(m) && (!m.skip || !m.skip[slot]) && !away.has(m.id));
     const rows = who.map(m => {
       const d = drawOf(m);
       const st = T - d >= tsh() - 0.05 ? 'ok' : T > tsh() ? 'partial' : 'cold';
@@ -528,6 +528,12 @@
     return { T0, rows, minutes, withHeater, total: who.length };
   }
 
+  // Without names, showers are logged for one 'someone at home' – learned like a person, counted as "~N showers".
+  // It's marked by its id (the shared sheet keeps only fixed member columns).
+  const isGeneric = (m) => m.id.startsWith('gen');
+  const generic = () => fam.members.find(isGeneric);
+  const anonShowers = (T) => Math.floor(capacity(T) / need(generic()));
+
   // ---------- Showers tonight (the family's own measure: their tank, their people, the season) ----------
   function showersTonight(now) {
     const t = nextAt(cfg.evening, now - 3 * HOUR); // "tonight" until 3 hours after the evening showers
@@ -535,7 +541,7 @@
       if (time < wx.hours[0].start || time > wx.hours[wx.hours.length - 1].end) return null;
       const p = plan(time, 'evening');
       if (p.total) return { ok: p.rows.filter(r => r.st === 'ok').length, total: p.total };
-      return { n: Math.floor(capacity(p.T0) / cfg.perPerson) }; // nobody listed: default-size showers
+      return { n: anonShowers(p.T0) }; // nobody listed: showers of the default (or learned 'someone') size
     };
     const tonight = at(t), yday = at(t - DAY);
     const say = (x) => x.total != null ? `${ltr(x.ok)} מתוך ${ltr(x.total)}` : `~${ltr(x.n)} מקלחות`;
@@ -622,7 +628,7 @@
     const p = plan(t, slot);
     const status = !p.rows.length ? '' : p.rows.every(r => r.st === 'ok') ? 'ok' : p.rows.some(r => r.st === 'ok') ? 'partial' : 'cold';
     const running = slot === 'now' && activeRun(now);
-    const advice = !p.rows.length ? ''
+    const advice = !p.rows.length ? `<p class="note">בערך ${ltr(anonShowers(p.T0))} מקלחות חמות ברצף</p>`
       : p.minutes === 0 ? `<p class="advice ok">✅ ${running ? 'אפשר לכבות את הדוד' : 'אין צורך להדליק דוד'}</p>`
       : running && p.minutes >= 3 ? `<p class="advice warn">🔥 הדוד דלוק – צריך עוד כ-${ltr(p.minutes)} דקות${p.withHeater < p.total ? ` (יספיק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף)` : ''}</p>`
       : p.minutes < 3 ? `<p class="advice warn">⚠️ הדוד כבר חם, אבל יספיק רק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף – כדאי לפזר את המקלחות</p>`
@@ -634,6 +640,64 @@
       ${advice}
     </div>`;
   }
+
+  // ---------- First visit: say what we know, and offer to tailor it ----------
+  // open: decided on the first render with a forecast; added: names entered in the card this visit
+  const welcome = { open: null, added: [], done: null };
+  function renderWelcome(now) {
+    const box = $('welcome');
+    if (!wx) { box.innerHTML = ''; return; }
+    if (welcome.open === null) welcome.open = !store.get('hwm.welcomeDone', false) && !fam.members.length;
+    // a family joined by link already has its people
+    if (welcome.open && fam.members.length && !welcome.added.length) { welcome.open = false; store.set('hwm.welcomeDone', true); }
+    if (welcome.done) {
+      box.innerHTML = `<section class="card welcome"><p>${welcome.done}</p>
+        <p class="note">אחרי כל מקלחת – בכרטיס "רישום מקלחת" למטה: מי התקלח, ואיך היו המים. <button type="button" class="linkish" id="wGo">לרישום מקלחת ↓</button></p></section>`;
+      return;
+    }
+    if (!welcome.open) { box.innerHTML = ''; return; }
+    const sh = showersTonight(now).tonight;
+    box.innerHTML = `<section class="card welcome">
+      <h2>👋 ברוכים הבאים</h2>
+      <p>עוד אין לנו נתונים על המקלחות אצלכם. לפי דוד ממוצע (כ-150 ליטר) והשמש של היום, ${sh && sh.n != null ? `הערב יהיו בערך <b>${ltr(sh.n)} מקלחות חמות</b> בלי להדליק דוד` : 'אפשר להעריך כמה מקלחות חמות יהיו'}. ככל שתרשמו אחרי כל מקלחת איך היו המים, נדייק לדוד שלכם.</p>
+      <p><b>רוצים שנתאים את זה אליכם?</b> רשמו את בני הבית – כל אחד מתקלח אחרת (ארוך או קצר, חם או פושר), והאתר ילמד כל אחד בנפרד.</p>
+      ${welcome.added.length ? `<div class="chips">${welcome.added.map(n => `<span>${esc(n)}</span>`).join('')}</div>` : ''}
+      <div class="add-row"><input id="wName" placeholder="שם (למשל: נועה)" aria-label="שם"><button type="button" id="wAdd">➕ הוספה</button></div>
+      <div class="add-row">
+        <button type="button" id="wDone" class="primary" ${welcome.added.length ? '' : 'disabled'}>סיימתי</button>
+        <button type="button" id="wSkip">אמשיך בלי שמות</button>
+      </div>
+      <p class="note">בלי שמות נניח שכל המקלחות הן של אדם אחד, ולא נלמד מי אוהב מקלחת ארוכה או חמה במיוחד. אפשר להוסיף שמות גם אחר כך, ב"בני המשפחה".</p>
+    </section>`;
+  }
+
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || !$('welcome').contains(b)) return;
+    if (b.id === 'wAdd') {
+      const name = $('wName').value.trim();
+      if (!name) return;
+      welcome.added.push(name);
+      commit([{ op: 'member', m: { id: uid(), name, liters: null, n: 0, skip: {} } }]);
+      $('wName').focus();
+    } else if (b.id === 'wDone') {
+      store.set('hwm.welcomeDone', true);
+      welcome.open = false;
+      welcome.done = `✅ מעולה, נוספו ${welcome.added.map(esc).join(', ')}.`;
+      render();
+    } else if (b.id === 'wSkip') {
+      store.set('hwm.welcomeDone', true);
+      welcome.open = false;
+      welcome.done = '✅ בסדר – נרשום את כל המקלחות תחת "מישהו מהבית".';
+      if (!generic()) commit([{ op: 'member', m: { id: 'gen' + uid(), name: 'מישהו מהבית', liters: null, n: 0, skip: {} } }]);
+      else render();
+    } else if (b.id === 'wGo') {
+      $('logWho')?.closest('section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.id === 'wName') $('wAdd').click();
+  });
 
   // A rendering bug should show up as a message, not as a silently missing section
   function render() {
@@ -648,6 +712,7 @@
   function renderSection() {
     const root = $('family');
     $('locHome').appendChild($('locCard')); // take it out before the section is rebuilt
+    renderWelcome(Date.now());
     if (!wx) { root.innerHTML = ''; placeHome(); return; }
     const now = Date.now();
     const cur = run(now).T;
@@ -683,7 +748,7 @@
         <span>● מקלחת שנרשמה</span>
         <span><i style="background:var(--mid);opacity:.25"></i>דוד חשמלי דלוק</span>
       </div>
-      ${fam.members.length ? '' : '<p class="note">הוסיפו בני משפחה (למטה) כדי לראות מי יכול להתקלח בכל זמן.</p>'}
+      ${fam.members.some(m => !isGeneric(m)) ? '' : '<p class="note">הוסיפו בני משפחה (למטה) כדי לראות מי יכול להתקלח בכל זמן.</p>'}
       <div class="slots">${slots.map(s => slotCard(s[0], s[1], s[2], now)).join('')}</div>
       <p class="note">הסדר ברשימה הוא סדר המקלחות. ההערכה כוללת רק הדלקות דוד שנרשמו.</p>
     </section>
