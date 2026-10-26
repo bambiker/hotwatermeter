@@ -656,10 +656,11 @@
     const slots = [['עכשיו', now, 'now'], ['בוקר', morning, 'morning'], ['ערב', evening, 'evening']]
       .filter(s => s[1] <= wx.hours[wx.hours.length - 1].end)
       .sort((a, b) => a[1] - b[1]);
-    const recent = [...fam.logs].sort((a, b) => b.t - a.t).slice(0, 12);
+    // one journal for showers and boiler runs, newest first (5 visible, the rest by scrolling)
+    const journal = fam.logs.map(l => ({ t: l.t, l })).concat(fam.boilers.map(b => ({ t: b.t, b })))
+      .sort((a, b) => b.t - a.t).slice(0, 200);
     const defaultTime = localStr(now).slice(0, 16);
     const active = activeRun(now);
-    const runs = [...fam.boilers].sort((a, b) => b.t - a.t).slice(0, 8);
     const mins = (b) => Math.round((runEnd(b, now) - b.t) / 60000);
     const sh = showersTonight(now);
     const sunToday = run().gains[localStr(now).slice(0, 10)];
@@ -706,11 +707,6 @@
           <button type="button" id="boilAdd">רישום</button>
         </div>
       </details>
-      ${runs.length ? `<table class="logs"><thead><tr><th>מתי</th><th>משך</th><th></th></tr></thead><tbody>
-        ${runs.map(b => `<tr><td>${dayWord(b.t, now)} ${ltr(hhmm(b.t))}</td>
-          <td>${ltr(mins(b))} דק׳${b.min == null ? (b === active ? ' (דלוק)' : ' (לא נרשם כיבוי)') : ''}</td>
-          <td><button type="button" class="x" data-del-boil="${b.id}" aria-label="מחיקה">✕</button></td></tr>`).join('')}
-      </tbody></table>` : ''}
       <p class="note">מהמקלחות שאחרי הדלקה המודל לומד כמה מהר הדוד שלכם מחמם, וככה ההמלצה "כמה דקות להדליק" משתפרת.</p>
     </section>
 
@@ -726,11 +722,16 @@
         ${Object.entries(OUT).filter(([, o]) => o.b).map(([k, o]) => `<button type="button" data-out="${k}">${o.i} ${o.b}</button>`).join('')}
       </div>
       <div id="learnMsg" class="note">${learnNote && Date.now() - learnNote.at < 10 * 60000 ? esc(learnNote.text) : ''}</div>` : '<p class="note">קודם מוסיפים בני משפחה.</p>'}
-      ${recent.length ? `<table class="logs"><thead><tr><th>מתי</th><th>מי</th><th>תוצאה</th><th></th></tr></thead><tbody>
-        ${recent.map(l => `<tr><td>${dayWord(l.t, now)} ${ltr(hhmm(l.t))}</td><td>${esc(member(l.member)?.name ?? '?')}${l.boiler ? ' 🔌' : ''}</td>
+      ${journal.length ? `<div class="journal-h">📒 היומן – מקלחות והדלקות דוד (${ltr(journal.length)})</div>
+      <div class="log-scroll" id="journal"><table class="logs"><thead><tr><th>מתי</th><th>מי / מה</th><th>תוצאה</th><th></th></tr></thead><tbody>
+        ${journal.map(({ t, l, b }) => `<tr class="${b ? 'boil-row' : ''}"><td>${dayWord(t, now)} ${ltr(hhmm(t))}</td>${l ? `
+          <td>${esc(member(l.member)?.name ?? '?')}${l.boiler ? ' 🔌' : ''}</td>
           <td style="color:${OUT[l.outcome].c}">${OUT[l.outcome].i} ${OUT[l.outcome].t}</td>
-          <td><button type="button" class="x" data-del-log="${l.id}" aria-label="מחיקה">✕</button></td></tr>`).join('')}
-      </tbody></table>` : ''}
+          <td><button type="button" class="x" data-del-log="${l.id}" aria-label="מחיקה">✕</button></td>` : `
+          <td>🔌 דוד חשמלי</td>
+          <td>${ltr(mins(b))} דק׳${b.min == null ? (b === active ? ' (דלוק)' : ' (לא נרשם כיבוי)') : b === active ? ' (דלוק)' : ''}</td>
+          <td><button type="button" class="x" data-del-boil="${b.id}" aria-label="מחיקה">✕</button></td>`}</tr>`).join('')}
+      </tbody></table></div>` : ''}
     </section>
 
     <details class="card fam" id="famBox" ${fam.members.length ? '' : 'open'}>
@@ -820,11 +821,22 @@
 
     drawTankChart($('tankChart'), now);
     placeHome();
+    fitJournal();
     ['famBox', 'cfgBox', 'shareBox'].forEach(id => {
       const el = $(id), key = 'hwm.open.' + id, v = store.get(key, null);
       if (v != null) el.open = v;
       el.addEventListener('toggle', () => store.set(key, el.open));
     });
+  }
+
+  // Show exactly five journal rows; the rest scroll inside the box (rows wrap on narrow screens)
+  function fitJournal() {
+    const box = $('journal');
+    if (!box) return;
+    const rows = box.querySelectorAll('tbody tr');
+    if (rows.length <= 5) { box.style.maxHeight = ''; return; }
+    const h = rows[5].getBoundingClientRect().top - box.getBoundingClientRect().top;
+    box.style.maxHeight = h > 0 ? h + 'px' : '16rem'; // not laid out yet (e.g. a background tab)
   }
 
   function drawTankChart(host, now) {
