@@ -53,7 +53,11 @@
   button { cursor: pointer; align-self: flex-start; background: var(--sun); border-color: var(--sun); color: #fff; font-weight: 600; padding: 8px 20px; }
   button:disabled { opacity: .5; cursor: default; }
   .hp { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } /* off-screen offsets widen an RTL page */
+  [hidden] { display: none !important; } /* the form's display:flex would otherwise win over hidden */
   #result { font-weight: 600; }
+  .sent { background: var(--surface); border: 2px solid #2e7d32; border-radius: 12px; padding: 20px 16px; text-align: center; }
+  .sent .big { font-size: 1.3rem; font-weight: 700; color: #2e7d32; margin: 0 0 6px; }
+  .sent .btn { display: inline-block; margin-top: 8px; background: var(--sun); color: #fff; font-weight: 600; padding: 8px 20px; border-radius: 8px; text-decoration: none; }
   #result.ok { color: #2e7d32; } #result.err { color: #c62828; }
 </style>
 </head>
@@ -71,6 +75,11 @@
     <button type="submit" id="send">שליחה</button>
     <div id="result" role="status"></div>
   </form>
+  <div class="sent" id="sent" hidden>
+    <p class="big">✅ ההודעה נשלחה, תודה!</p>
+    <p>חוזרים לאתר בעוד <b id="count">4</b> שניות…</p>
+    <a class="btn" href="./">חזרה לאתר עכשיו</a>
+  </div>
   <p class="note">ההודעה נשלחת למפעיל האתר. אם צירפתם מייל – נענה אליו.</p>
 
   <footer><a href="./">→ חזרה למד מים חמים</a> · <a href="faq.html">שאלות ותשובות</a></footer>
@@ -96,8 +105,15 @@
       // 'bad key' comes from a server deployed before the contact form existed
       if (j.error) throw new Error(j.error === 'too many messages today' ? 'נשלחו היום יותר מדי הודעות – נסו מחר.'
         : j.error === 'bad key' ? 'השרת עוד לא עודכן לגרסה שתומכת בטופס (צריך לפרסם גרסה חדשה של הסקריפט).' : j.error);
-      $('contact').reset();
-      show('✅ ההודעה נשלחה, תודה!', 'ok');
+      // confirm, then take them back to the site
+      $('contact').hidden = true;
+      $('sent').hidden = false;
+      let n = 4;
+      const tick = setInterval(() => {
+        n -= 1;
+        $('count').textContent = n;
+        if (n <= 0) { clearInterval(tick); location.href = './'; }
+      }, 1000);
     } catch (err) {
       show('ההודעה לא נשלחה: ' + (err instanceof TypeError ? 'אין חיבור לשרת' : err.message), 'err');
     } finally {
