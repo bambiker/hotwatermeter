@@ -656,10 +656,16 @@
       return;
     }
     if (!welcome.open) { box.innerHTML = ''; return; }
-    const sh = showersTonight(now).tonight;
+    const { tonight: sh, yday } = showersTonight(now);
+    // yesterday at the same hour, so a first-timer has something to compare with
+    const forN = (n) => n === 0 ? 'אף מקלחת חמה' : n === 1 ? 'מקלחת חמה אחת' : `כ-${ltr(n)} מקלחות חמות`;
+    const vs = !sh || sh.n == null || !yday || yday.n == null ? ''
+      : yday.n > sh.n ? ` לשם השוואה, אתמול זה הספיק ל${yday.n === 1 ? 'מקלחת אחת' : `כ-${ltr(yday.n)}`} – היום יש פחות שמש.`
+      : yday.n < sh.n ? ` לשם השוואה, אתמול זה הספיק ${yday.n === 0 ? 'לאף מקלחת חמה' : `רק ל${yday.n === 1 ? 'מקלחת אחת' : `כ-${ltr(yday.n)}`}`} – היום יש יותר שמש.`
+      : ' בערך כמו אתמול.';
     box.innerHTML = `<section class="card welcome">
       <h2>👋 ברוכים הבאים</h2>
-      <p>עוד אין לנו נתונים על המקלחות אצלכם. לפי דוד ממוצע (כ-150 ליטר) והשמש של היום, ${sh && sh.n != null ? `הערב יהיו בערך <b>${ltr(sh.n)} מקלחות חמות</b> בלי להדליק דוד` : 'אפשר להעריך כמה מקלחות חמות יהיו'}. ככל שתרשמו אחרי כל מקלחת איך היו המים, נדייק לדוד שלכם.</p>
+      <p>עוד אין לנו נתונים על המקלחות אצלכם. לפי דוד ממוצע (כ-150 ליטר) והשמש של היום, ${sh && sh.n != null ? `${sh.n === 0 ? 'הערב כנראה <b>לא יהיו מקלחות חמות</b> בלי להדליק דוד' : `הדוד יספיק הערב ל<b>${forN(sh.n)}</b> בלי להדליק דוד`}.${vs}` : 'אפשר להעריך כמה מקלחות חמות יהיו.'} ככל שתרשמו אחרי כל מקלחת איך היו המים, נדייק לדוד שלכם.</p>
       <p><b>רוצים שנתאים את זה אליכם?</b> רשמו את בני הבית – כל אחד מתקלח אחרת (ארוך או קצר, חם או פושר), והאתר ילמד כל אחד בנפרד.</p>
       ${welcome.added.length ? `<div class="chips">${welcome.added.map(n => `<span>${esc(n)}</span>`).join('')}</div>` : ''}
       <div class="add-row"><input id="wName" placeholder="שם (למשל: נועה)" aria-label="שם"><button type="button" id="wAdd">➕ הוספה</button></div>
