@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>צרו קשר – מד מים חמים</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#e08a00">
+<meta name="description" content="שאלות, הצעות או תקלות במד מים חמים – כתבו לנו">
+<style>
+  :root {
+    --bg: #f7f6f3; --surface: #ffffff; --ink: #1d1d1f; --ink-2: #55555c; --ink-3: #8a8a92;
+    --line: #e4e2dd; --sun: #e08a00; --accent: #1f5fbf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141416; --surface: #1d1d20; --ink: #f2f2f4; --ink-2: #b5b5bc; --ink-3: #85858d;
+      --line: #313136; --sun: #f5a524; --accent: #6ea2f0;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141416; --surface: #1d1d20; --ink: #f2f2f4; --ink-2: #b5b5bc; --ink-3: #85858d;
+    --line: #313136; --sun: #f5a524; --accent: #6ea2f0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif; line-height: 1.6; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
+  h1 .logo { width: 44px; height: 44px; }
+  h2 { font-size: 1.05rem; color: var(--ink-2); margin: 28px 0 10px; }
+  a { color: var(--accent); }
+  .sub { color: var(--ink-2); margin: 0 0 8px; }
+  .back { display: inline-block; margin-bottom: 16px; }
+  details { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; }
+  details[open] { border-color: var(--sun); }
+  details:target { box-shadow: 0 0 0 3px color-mix(in srgb, var(--sun) 35%, transparent); }
+  summary { cursor: pointer; font-weight: 600; font-size: 1.02rem; }
+  details > div { margin-top: 10px; }
+  details p { margin: 0 0 10px; }
+  details ul { margin: 0 0 10px; padding-inline-start: 20px; }
+  table { border-collapse: collapse; margin: 6px 0 12px; font-variant-numeric: tabular-nums; }
+  th, td { border-bottom: 1px solid var(--line); padding: 4px 10px; text-align: start; }
+  th { color: var(--ink-3); font-weight: 500; font-size: .85rem; }
+  .note { color: var(--ink-3); font-size: .85rem; }
+  .tip { background: color-mix(in srgb, var(--sun) 12%, transparent); border-radius: 8px; padding: 8px 10px; }
+  span[dir="ltr"] { unicode-bidi: isolate; }
+  footer { color: var(--ink-3); font-size: .8rem; margin-top: 28px; }
+  form { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: .9rem; color: var(--ink-2); }
+  input, textarea, button { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  textarea { min-height: 140px; resize: vertical; }
+  button { cursor: pointer; align-self: flex-start; background: var(--sun); border-color: var(--sun); color: #fff; font-weight: 600; padding: 8px 20px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .hp { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } /* off-screen offsets widen an RTL page */
+  #result { font-weight: 600; }
+  #result.ok { color: #2e7d32; } #result.err { color: #c62828; }
+</style>
+</head>
+<body>
+<main>
+  <h1><img src="logo.svg" alt="" class="logo">צרו קשר</h1>
+  <p class="sub">שאלה, הצעה לשיפור, משהו שלא עובד או לא ברור? נשמח לשמוע. אפשר גם לבדוק קודם ב<a href="faq.html">שאלות ותשובות</a>.</p>
+  <a class="back" href="./">→ חזרה למד מים חמים</a>
+
+  <form id="contact" novalidate>
+    <label>שם (לא חובה)<input id="name" autocomplete="name" maxlength="100"></label>
+    <label>מייל לחזרה (לא חובה – בלעדיו לא נוכל לענות)<input id="email" type="email" autocomplete="email" maxlength="200" dir="ltr"></label>
+    <label>ההודעה<textarea id="message" maxlength="3000" required></textarea></label>
+    <div class="hp" aria-hidden="true"><label>אתר<input id="website" tabindex="-1" autocomplete="off"></label></div>
+    <button type="submit" id="send">שליחה</button>
+    <div id="result" role="status"></div>
+  </form>
+  <p class="note">ההודעה נשלחת למפעיל האתר. אם צירפתם מייל – נענה אליו.</p>
+
+  <footer><a href="./">→ חזרה למד מים חמים</a> · <a href="faq.html">שאלות ותשובות</a></footer>
+</main>
+<script src="config.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const url = (window.HWM_HOSTED_URL || '').trim();
+  const show = (text, cls) => { $('result').textContent = text; $('result').className = cls || ''; };
+  if (!url) { $('send').disabled = true; show('שליחת הודעות לא זמינה כרגע.', 'err'); return; }
+  $('contact').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const message = $('message').value.trim();
+    if (message.length < 2) { show('כתבו הודעה קודם.', 'err'); $('message').focus(); return; }
+    const email = $('email').value.trim();
+    if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { show('כתובת המייל לא נראית תקינה.', 'err'); $('email').focus(); return; }
+    $('send').disabled = true; show('שולח…');
+    try {
+      // text/plain body → no CORS preflight (same as the family log)
+      const r = await fetch(url, { method: 'POST', body: JSON.stringify({ action: 'contact', name: $('name').value.trim(), email, message, website: $('website').value }) });
+      const j = await r.json();
+      if (j.error) throw new Error(j.error === 'too many messages today' ? 'נשלחו היום יותר מדי הודעות – נסו מחר.' : j.error);
+      $('contact').reset();
+      show('✅ ההודעה נשלחה, תודה!', 'ok');
+    } catch (err) {
+      show('ההודעה לא נשלחה: ' + (err instanceof TypeError ? 'אין חיבור לשרת' : err.message), 'err');
+    } finally {
+      $('send').disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>

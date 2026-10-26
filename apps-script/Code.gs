@@ -11,12 +11,16 @@
  *   - Single family: no family id, the key from setup(), data in this spreadsheet.
  *
  * POST { action: 'create', name }           → { ok, f, key }
+ * POST { action: 'contact', name, email, message } → { ok }  (saved to the "messages" tab and emailed)
  * GET  ?f=…&key=…                           → { ok, state }
  * POST { f, key, ops: [...] } (text/plain)  → applies ops in order, returns { ok, state }
  * (omit f for single-family mode)
  */
 
 const MAX_NEW_FAMILIES_PER_DAY = 50;
+const MAX_MESSAGES_PER_DAY = 30;
+// Contact messages go to the script property CONTACT_EMAIL (Project Settings → Script properties),
+// or to the Google account running the script. The address stays out of the public code.
 
 const TABLES = {
   members: ['id', 'name', 'liters', 'n', 'skip_morning', 'skip_evening'],
@@ -45,6 +49,7 @@ function doGet(e) {
 function doPost(e) {
   const body = JSON.parse(e.postData.contents);
   if (body.action === 'create') return guard_(() => createFamily_(body.name));
+  if (body.action === 'contact') return guard_(() => contact_(body));
   return handle_(body.f, body.key, body.ops || []);
 }
 
@@ -97,6 +102,37 @@ function index_() {
     sh.getRange('A:D').setNumberFormat('@');
   }
   return sh;
+}
+
+function contact_(b) {
+  if (b.website) return { ok: true }; // honeypot: only bots fill the hidden field
+  const message = String(b.message || '').trim().slice(0, 3000);
+  if (message.length < 2) throw new Error('empty message');
+  const name = String(b.name || '').trim().slice(0, 100);
+  const email = String(b.email || '').trim().slice(0, 200);
+  const props = PropertiesService.getScriptProperties();
+  const today = Utilities.formatDate(new Date(), 'UTC', 'yyyy-MM-dd');
+  let quota = JSON.parse(props.getProperty('MESSAGES') || '{}');
+  if (quota.d !== today) quota = { d: today, n: 0 };
+  if (quota.n >= MAX_MESSAGES_PER_DAY) throw new Error('too many messages today');
+  quota.n++;
+  props.setProperty('MESSAGES', JSON.stringify(quota));
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('messages');
+  if (!sh) {
+    sh = ss.insertSheet('messages');
+    sh.getRange(1, 1, 1, 4).setValues([['when', 'name', 'email', 'message']]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    sh.getRange('B:D').setNumberFormat('@');
+  }
+  sh.getRange(sh.getLastRow() + 1, 1, 1, 4).setValues([[new Date(), name, email, message]]);
+
+  const to = props.getProperty('CONTACT_EMAIL') || Session.getEffectiveUser().getEmail();
+  const opts = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? { replyTo: email } : {};
+  MailApp.sendEmail(to, 'מד מים חמים – הודעה חדשה' + (name ? ' מ' + name : ''),
+    message + '\n\n—\n' + (name || 'בלי שם') + (email ? ' · ' + email : ' · בלי מייל לחזרה'), opts);
+  return { ok: true };
 }
 
 function createFamily_(name) {
