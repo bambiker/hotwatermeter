@@ -17,6 +17,9 @@
  * (omit f for single-family mode)
  */
 
+// Shown at …/exec?version – to check which code a deployment is actually running
+const VERSION = '2026-10-26 contact';
+
 const MAX_NEW_FAMILIES_PER_DAY = 50;
 const MAX_MESSAGES_PER_DAY = 30;
 // Contact messages go to the script property CONTACT_EMAIL (Project Settings → Script properties),
@@ -43,6 +46,7 @@ function setup() {
 }
 
 function doGet(e) {
+  if ('version' in e.parameter) return json_({ ok: true, version: VERSION, contact: true });
   return handle_(e.parameter.f, e.parameter.key, null);
 }
 
