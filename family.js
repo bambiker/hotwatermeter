@@ -610,7 +610,7 @@
     tip.moves.forEach(mv => { (byTime[mv.t] ||= []).push(esc(mv.m.name)); });
     const who = Object.entries(byTime).map(([t, names]) => `${names.join(' ו')} עד ${ltr(hhmm(+t))}`).join(', ו');
     const plural = tip.moves.length > 1 ? 'יתקלחו' : 'יתקלח/תתקלח';
-    return `<p class="tip-when">💡 אם ${who} ${plural} במהלך היום במקום בערב – ${tip.hot === tip.total ? 'יספיק לכולם' : `יספיק ל-${ltr(tip.hot)} מתוך ${ltr(tip.total)}`} בלי להדליק דוד (במקום ${ltr(tip.before)}). השמש תספיק לחמם את הדוד מחדש עד הערב.</p>`;
+    return `<p class="tip-when">💡 אם ${who} ${plural} במהלך היום במקום בערב – ${tip.hot === tip.total ? 'יספיק לכולם' : `יספיק ל-${ltr(tip.hot)} מתוך ${ltr(tip.total)}`} בלי להדליק דוד (במקום ${ltr(tip.before)}). השמש תספיק לחמם את הדוד מחדש עד הערב.${why('best-time')}</p>`;
   }
 
   // ---------- Rendering ----------
@@ -624,15 +624,18 @@
     none: { b: 'לא היו מים חמים', t: 'לא היו מים חמים', i: '❌', c: 'var(--bad)' }
   };
 
+  // "why?" links from the advice to the matching answer in the Q&A page
+  const why = (id) => ` <a class="why" href="faq.html#${id}">למה?</a>`;
+
   function slotCard(title, t, slot, now) {
     const p = plan(t, slot);
     const status = !p.rows.length ? '' : p.rows.every(r => r.st === 'ok') ? 'ok' : p.rows.some(r => r.st === 'ok') ? 'partial' : 'cold';
     const running = slot === 'now' && activeRun(now);
     const advice = !p.rows.length ? `<p class="note">בערך ${ltr(anonShowers(p.T0))} מקלחות חמות ברצף</p>`
       : p.minutes === 0 ? `<p class="advice ok">✅ ${running ? 'אפשר לכבות את הדוד' : 'אין צורך להדליק דוד'}</p>`
-      : running && p.minutes >= 3 ? `<p class="advice warn">🔥 הדוד דלוק – צריך עוד כ-${ltr(p.minutes)} דקות${p.withHeater < p.total ? ` (יספיק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף)` : ''}</p>`
-      : p.minutes < 3 ? `<p class="advice warn">⚠️ הדוד כבר חם, אבל יספיק רק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף – כדאי לפזר את המקלחות</p>`
-      : `<p class="advice warn">🔌 להדליק דוד כ-${ltr(p.minutes)} דקות לפני${p.withHeater < p.total ? ` – יספיק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף` : ''}</p>`;
+      : running && p.minutes >= 3 ? `<p class="advice warn">🔥 הדוד דלוק – צריך עוד כ-${ltr(p.minutes)} דקות${p.withHeater < p.total ? ` (יספיק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף)${why('heat-each-or-all')}` : why('how-long')}</p>`
+      : p.minutes < 3 ? `<p class="advice warn">⚠️ הדוד כבר חם, אבל יספיק רק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף – כדאי לפזר את המקלחות${why('heat-each-or-all')}</p>`
+      : `<p class="advice warn">🔌 להדליק דוד כ-${ltr(p.minutes)} דקות לפני${p.withHeater < p.total ? ` – יספיק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף${why('heat-each-or-all')}` : why('how-long')}</p>`;
     return `<div class="slot ${status}">
       <div class="slot-h"><b>${title}</b> <span class="note">${dayWord(t, now)} ${ltr(hhmm(t))}</span></div>
       <div class="slot-t">${ltr('~' + fmt(p.T0) + '°C')}</div>
