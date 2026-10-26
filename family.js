@@ -548,11 +548,11 @@
     const pct = (x) => x.total != null ? Math.round(x.ok / x.total * 100) : null;
     const cls = !tonight ? '' : tonight.total != null ? (pct(tonight) === 100 ? 'good' : pct(tonight) > 0 ? 'mid' : 'bad') : '';
     const html = !tonight ? '' : `<div class="showers">
-      <div class="k">🚿 ${t - now > 12 * HOUR ? 'מחר בערב' : 'הערב'} (${ltr(hhmm(t))}) בלי להדליק דוד</div>
+      <div class="k">🚿 ${dayStart(t) > dayStart(now) ? 'מחר בערב' : 'הערב'} (${ltr(hhmm(t))}) בלי להדליק דוד</div>
       <div class="big2 ${cls}">${tonight.total != null ? `מספיק ל-${say(tonight)}` : say(tonight)}</div>
       <div class="note">${yday ? `אתמול באותה שעה: ${say(yday)}` : ''} · מקלחת ב-${ltr(tsh() + '°')}, מים מהברז ${ltr(tin() + '°')}</div>
     </div>`;
-    return { html, tonight, yday };
+    return { html, tonight, yday, t, say, cls };
   }
 
   // ---------- When to shower: move someone to midday so the sun can make up for it ----------
@@ -708,6 +708,22 @@
     if (e.key === 'Enter' && e.target.id === 'wName') $('wAdd').click();
   });
 
+  // ---------- At a glance: the answer first, before the charts ----------
+  function renderSummary(now, cur, sh) {
+    const box = $('summary');
+    if (welcome.open || !sh.tonight) { box.innerHTML = ''; return; }
+    const when = dayStart(sh.t) > dayStart(now) ? 'מחר בערב' : 'הערב';
+    box.innerHTML = `<a class="card summary" href="#tankCard" aria-label="לפרטים על מצב הדוד">
+      <div><div class="k">הדוד עכשיו</div><div class="sum-temp">${ltr('~' + fmt(cur) + '°C')}</div></div>
+      <div class="sum-sh">
+        <div class="k">🚿 ${when} (${ltr(hhmm(sh.t))}) בלי להדליק דוד</div>
+        <div class="sum-n ${sh.cls}">${sh.tonight.total != null ? `מספיק ל-${sh.say(sh.tonight)}` : sh.say(sh.tonight)}</div>
+        ${sh.yday ? `<div class="note">אתמול באותה שעה: ${sh.say(sh.yday)}</div>` : ''}
+      </div>
+      <span class="sum-more">לפרטים ↓</span>
+    </a>`;
+  }
+
   // A rendering bug should show up as a message, not as a silently missing section
   function render() {
     try {
@@ -722,7 +738,7 @@
     const root = $('family');
     $('locHome').appendChild($('locCard')); // take it out before the section is rebuilt
     renderWelcome(Date.now());
-    if (!wx) { root.innerHTML = ''; placeHome(); return; }
+    if (!wx) { root.innerHTML = ''; $('summary').innerHTML = ''; placeHome(); return; }
     const now = Date.now();
     const cur = run(now).T;
     const morning = nextAt(cfg.morning, now);
@@ -738,6 +754,7 @@
     const mins = (b) => Math.round((runEnd(b, now) - b.t) / 60000);
     const sh = showersTonight(now);
     const sunToday = run().gains[localStr(now).slice(0, 10)];
+    renderSummary(now, cur, sh);
 
     root.innerHTML = `
     <section class="card fam" id="tankCard">
