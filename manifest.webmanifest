@@ -23,5 +23,8 @@
   ],
   "description": "כמה מקלחות חמות יהיו הערב בדוד השמש? מחשבון חינמי לפי השמש והעננים אצלכם: כמה דקות להדליק את הדוד החשמלי, מתי הכי כדאי להתקלח – ולומד את הדוד והמשפחה שלכם.",
   "id": "./",
+  "related_applications": [
+    { "platform": "webapp", "url": "https://bambiker.github.io/hotwatermeter/manifest.webmanifest" }
+  ],
   "scope": "./"
 }
