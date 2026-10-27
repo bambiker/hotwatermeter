@@ -801,28 +801,44 @@
 </script>
 <script>
   // Install as an app: Chrome/Android give a prompt; iPhone needs Share → Add to Home Screen
+  // Once installed, the button goes away in the browser too: the app marks itself when opened (shared storage
+  // on Android), Chrome reports it (getInstalledRelatedApps) and stops offering its prompt; on iPhone the app
+  // can't tell Safari, so the instructions have "already installed".
   (() => {
+    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
     const btn = document.getElementById('install'), help = document.getElementById('installHelp');
-    const installed = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
-    if (installed) return;
+    const KEY = 'hwm.installed';
+    const mark = () => { try { localStorage.setItem(KEY, '1'); } catch {} };
+    const hide = () => { btn.hidden = true; help.hidden = true; };
+    if (matchMedia('(display-mode: standalone)').matches || navigator.standalone) { mark(); return; } // this is the app
     let deferred = null;
-    addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferred = e; btn.hidden = false; });
-    addEventListener('appinstalled', () => { btn.hidden = true; help.hidden = true; });
+    // Chrome offers to install only while the site isn't installed – so this also means it was removed
+    addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault(); deferred = e;
+      try { localStorage.removeItem(KEY); } catch {}
+      btn.hidden = false;
+    });
+    addEventListener('appinstalled', () => { mark(); hide(); });
+    let known = false;
+    try { known = localStorage.getItem(KEY) === '1'; } catch {}
+    if (known) return;
+    if (navigator.getInstalledRelatedApps) navigator.getInstalledRelatedApps().then(a => { if (a.length) { mark(); hide(); } }).catch(() => {});
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    if (ios || /android|mobile/i.test(navigator.userAgent)) btn.hidden = false; // offer instructions even before/without the prompt
+    // iPhone never offers a prompt, and some Android browsers don't either: show instructions there
+    if (ios || (/android|mobile/i.test(navigator.userAgent) && !('onbeforeinstallprompt' in window))) btn.hidden = false;
     btn.addEventListener('click', async () => {
       if (deferred) { deferred.prompt(); await deferred.userChoice; deferred = null; return; }
-      help.innerHTML = ios
+      help.innerHTML = (ios
         ? '<p><b>התקנה באייפון:</b> לוחצים על כפתור השיתוף <span dir="ltr">⬆️</span> בתחתית Safari ← "הוסף למסך הבית" ← "הוסף".</p>'
-        : '<p><b>התקנה:</b> בתפריט הדפדפן (⋮) בוחרים "התקנת אפליקציה" או "הוספה למסך הבית".</p>';
-      help.innerHTML += '<p class="note">האתר יופיע במסך הבית עם הלוגו, ויפתח כמו אפליקציה.</p>';
+        : '<p><b>התקנה:</b> בתפריט הדפדפן (⋮) בוחרים "התקנת אפליקציה" או "הוספה למסך הבית".</p>')
+        + '<p class="note">האתר יופיע במסך הבית עם הלוגו, ויפתח כמו אפליקציה. <button type="button" class="linkish" id="installDone">כבר התקנתי – להסתיר</button></p>';
       help.hidden = !help.hidden;
     });
-    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+    help.addEventListener('click', (e) => { if (e.target.id === 'installDone') { mark(); hide(); } });
   })();
 </script>
 <!-- ?v= changes with each release, so a phone never pairs a new page with an old cached script -->
-<script src="config.js?v=20261028g"></script>
-<script src="family.js?v=20261028g"></script>
+<script src="config.js?v=20261029a"></script>
+<script src="family.js?v=20261029a"></script>
 </body>
 </html>
