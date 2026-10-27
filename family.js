@@ -615,15 +615,57 @@
   const anonShowers = (T) => Math.floor(capacity(T) / need(generic()));
 
   // ---------- Showers tonight (the family's own measure: their tank, their people, the season) ----------
+  // Who won't shower this evening (away, showered at the pool, back very late): set by tapping a name,
+  // kept on this device for that evening only
+  const tonightAt = (now) => nextAt(cfg.evening, now - 3 * HOUR); // "tonight" until 3 hours after the evening showers
+  function awayTonight(now) {
+    const a = store.get('hwm.away', null);
+    return new Set(a && a.d === localStr(tonightAt(now)).slice(0, 10) ? a.ids : []);
+  }
+  function toggleAway(id) {
+    const now = Date.now(), set = awayTonight(now);
+    if (set.has(id)) set.delete(id); else set.add(id);
+    store.set('hwm.away', { d: localStr(tonightAt(now)).slice(0, 10), ids: [...set] });
+    tipCache.key = '';
+    render();
+  }
+  // who already logged a shower this evening
+  const showeredTonight = (now) => { const t = tonightAt(now); return new Set(fam.logs.filter(l => l.t >= t - 3 * HOUR && l.t <= now).map(l => l.member)); };
+  const eveningPeople = () => fam.members.filter(m => !isGeneric(m) && !(m.skip && m.skip.evening));
+
+  // Heating for each person separately, right before their own shower: just enough for them, in the
+  // shower order (the sun's share goes to the first ones). minutes: 0 = no boiler needed; capped: even the
+  // thermostat's maximum won't last them to the end.
+  function heatEach(t, away) {
+    const p = plan(t, 'evening', [], away);
+    const stat = Math.min(cfg.heaterMax, cfg.tankMax);
+    const perMin = cfg.heaterKw * cfg.heaterEff * 60 / (cfg.liters * CP); // °C per minute of boiler
+    let T = p.T0;
+    const rows = p.rows.map(r => {
+      const d = drawOf(r.m), want = tsh() + d;
+      let min = 0, capped = false;
+      if (T < want - 0.05) {
+        const target = Math.min(want, Math.max(stat, T));
+        min = Math.max(1, Math.ceil((target - T) / perMin));
+        capped = target < want - 0.05;
+        T = target;
+      }
+      T = Math.max(tin(), T - d);
+      return Object.assign({}, r, { min, capped });
+    });
+    return { p, rows, total: rows.reduce((s, r) => s + r.min, 0) };
+  }
+
   function showersTonight(now) {
-    const t = nextAt(cfg.evening, now - 3 * HOUR); // "tonight" until 3 hours after the evening showers
-    const at = (time) => {
+    const t = tonightAt(now);
+    const away = awayTonight(now);
+    const at = (time, away) => {
       if (time < wx.hours[0].start || time > wx.hours[wx.hours.length - 1].end) return null;
-      const p = plan(time, 'evening');
-      if (p.total) return { ok: p.rows.filter(r => r.st === 'ok').length, total: p.total };
+      const p = plan(time, 'evening', [], away);
+      if (p.total || (away && away.size && eveningPeople().length)) return { ok: p.rows.filter(r => r.st === 'ok').length, total: p.total };
       return { n: anonShowers(p.T0) }; // nobody listed: showers of the default (or learned 'someone') size
     };
-    const tonight = at(t), yday = at(t - DAY), tmrw = at(t + DAY);
+    const tonight = at(t, away), yday = at(t - DAY), tmrw = at(t + DAY);
     const say = (x) => x.total != null ? `${ltr(x.ok)} מתוך ${ltr(x.total)}` : `~${ltr(x.n)} מקלחות`;
     return { tonight, yday, tmrw, t, say };
   }
@@ -636,7 +678,8 @@
   function timingTip(now) {
     const tEve = nextAt(cfg.evening, now - 3 * HOUR);
     if (tEve - now > 12 * HOUR) return null;
-    const base = plan(tEve, 'evening');
+    const away = awayTonight(now);
+    const base = plan(tEve, 'evening', [], away);
     const ok = (p) => p.rows.filter(r => r.st === 'ok').length;
     if (!base.total || ok(base) === base.total) return null;
     const day0 = dayStart(now), hours = [];
@@ -647,7 +690,7 @@
     if (!hours.length) return null;
     const score = (moves) => {
       const extra = moves.map(mv => ({ t: mv.t, member: mv.m.id, outcome: 'planned' }));
-      const p = plan(tEve, 'evening', extra, new Set(moves.map(mv => mv.m.id)));
+      const p = plan(tEve, 'evening', extra, new Set([...away, ...moves.map(mv => mv.m.id)]));
       // each moved person needs a hot shower at their hour too
       const middayOk = moves.filter(mv => run(mv.t, extra.filter(e => e.t < mv.t)).T - drawOf(mv.m) >= tsh() - 0.05).length;
       return { hot: ok(p) + middayOk, middayOk, moves };
@@ -674,7 +717,7 @@
 
   let tipCache = { key: '', tip: null };
   function timingTipHtml(now) {
-    const key = JSON.stringify([Math.floor(now / (15 * 60000)), fam.logs.length, fam.boilers, fam.members.map(m => [m.id, need(m), m.skip]),
+    const key = JSON.stringify([Math.floor(now / (15 * 60000)), [...awayTonight(now)], fam.logs.length, fam.boilers, fam.members.map(m => [m.id, need(m), m.skip]),
       cfg.eff, cfg.tau, cfg.heaterEff, cfg.evening, wx.hours.length, wx.hours[0].start]);
     if (tipCache.key !== key) tipCache = { key, tip: timingTip(now) };
     const tip = tipCache.tip;
@@ -864,13 +907,23 @@
     const tn = sh.tonight;
     let head, body = '';
     if (tn.total != null) {
-      const p = plan(sh.t, 'evening');
+      const away = awayTonight(now);
+      const he = heatEach(sh.t, away);
       const all = tn.ok === tn.total;
       head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) בלי להדליק דוד יספיק</div>
-        <div class="big">${all ? (tn.total === 1 ? 'מספיק' : 'לכולם') : tn.ok ? `ל־${ltr(tn.ok)} מתוך ${ltr(tn.total)}` : 'לאף אחד'}</div>`;
-      const ST = { partial: 'ייגמר באמצע', cold: 'קר' };
-      body = `<ul class="people">${p.rows.map(r => `<li class="${r.st}"><span class="dot">${r.st === 'ok' ? CHECK : ''}</span>${esc(r.m.name)}${ST[r.st] ? `<span class="st">${ST[r.st]}</span>` : ''}</li>`).join('')}</ul>
-        ${all ? '' : adviceHtml(p, !!activeRun(now))}`;
+        <div class="big">${!tn.total ? 'אף אחד לא מתקלח' : all ? (tn.total === 1 ? 'מספיק' : 'לכולם') : tn.ok ? `ל־${ltr(tn.ok)} מתוך ${ltr(tn.total)}` : 'לאף אחד'}</div>`;
+      const row = new Map(he.rows.map(r => [r.m.id, r]));
+      const done = showeredTonight(now);
+      const item = (m) => {
+        const r = row.get(m.id);
+        if (done.has(m.id) && !tomorrowEve) return `<li class="ok"><button type="button" data-away="${m.id}" aria-pressed="false" disabled><span class="dot">${CHECK}</span>${esc(m.name)}<span class="st">כבר התקלח/ה</span></button></li>`;
+        if (!r) return `<li class="away"><button type="button" data-away="${m.id}" aria-pressed="true"><span class="dot"></span>${esc(m.name)}<span class="st">לא הערב</span></button></li>`;
+        const st = !r.min ? 'בלי דוד' : `🔌 ${ltr(r.min)} דק׳${r.capped ? ' (גם אז לא עד הסוף)' : ''}`;
+        return `<li class="${r.min ? 'heat' : 'ok'}"><button type="button" data-away="${m.id}" aria-pressed="false"><span class="dot">${r.min ? '' : CHECK}</span>${esc(m.name)}<span class="st">${st}</span></button></li>`;
+      };
+      body = `<ul class="people">${eveningPeople().map(item).join('')}</ul>
+        ${he.total ? `<p class="advice warn">🔌 כל אחד מדליק את הדוד לפני המקלחת שלו, לפי הדקות שליד השם – סה״כ כ-${ltr(he.total)} דקות.${why('heat-each-or-all')}</p>` : ''}
+        <p class="note">לחיצה על שם: לא מתקלח/ת הערב (לא בבית, התקלח/ה בבריכה…) – והחישוב מתעדכן.</p>`;
     } else {
       const n = tn.n;
       head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) בלי להדליק דוד ${n ? 'יספיק בערך ל־' : ''}</div>
@@ -914,6 +967,11 @@
     a.innerHTML = `<button type="button" class="act-shower" data-sheet="log">${SHOWER} התקלחתי</button>
       <button type="button" class="act-boil${on ? ' on' : ''}" data-sheet="boil">${on ? '🔥 הדוד דלוק' : '🔌 הדלקתי דוד'}</button>`;
   }
+
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-away]');
+    if (b) toggleAway(b.dataset.away);
+  });
 
   document.addEventListener('click', (e) => {
     const a = e.target.closest('[data-more]');
@@ -984,13 +1042,17 @@
     } else {
       const on = activeRun(now);
       const mins = on ? Math.round((now - on.t) / 60000) : 0;
-      const eve = plan(nextAt(cfg.evening, now - 3 * HOUR), 'evening');
+      // from now, for those who haven't showered yet tonight and are home
+      const away = new Set([...awayTonight(now), ...showeredTonight(now)]);
+      const at = Math.max(now + 60000, tonightAt(now));
+      const eve = plan(at, 'evening', [], away), each = heatEach(at, away).rows.filter(r => r.min);
       html = on ? `<h2>🔥 הדוד דלוק מאז ${ltr(hhmm(on.t))}</h2>
           <p class="note">${on.min != null ? `ייכבה בערך ב-${ltr(hhmm(on.t + on.min * 60000))}` : `${ltr(mins)} דק׳ עד עכשיו`}</p>
           ${adviceHtml(eve, true)}
           <button type="button" class="big-btn primary" data-sheet-boil-off>כיביתי את הדוד</button>`
         : `<h2>הדלקתם את הדוד? לכמה זמן?</h2>
-          ${eve.rows.length ? adviceHtml(eve, false) : ''}
+          ${each.length ? `<p class="k">כמה להדליק לפני כל מקלחת:</p><ul class="who">${each.map(r => `<li>🔌 ${esc(r.m.name)} – ${ltr(r.min)} דק׳${r.capped ? ' (גם אז לא עד הסוף)' : ''}</li>`).join('')}</ul>`
+            : eve.rows.length ? '<p class="advice ok">✅ הערב יספיק לכולם בלי דוד</p>' : ''}
           <div class="boil-grid">${[10, 20, 30, 45, 60, 90].map(m => `<button type="button" data-sheet-boil="${m}">${ltr(m)} דק׳</button>`).join('')}
             <button type="button" class="wide" data-sheet-boil="open">עד שאכבה</button></div>
           <p class="note">הדלקה מלפני כמה שעות? אפשר לרשום אותה בדיעבד בלשונית "יומן".</p>`;
@@ -1242,6 +1304,7 @@
         <label>שעת מקלחות ערב<input data-cfg="evening" type="time" value="${cfg.evening}"></label>
         <label>מחיר חשמל (₪ לקוט״ש, כולל מע״מ)<input data-cfg="kwhPrice" type="number" min="0.1" max="5" step="0.01" value="${cfg.kwhPrice}"></label>
       </div>
+      ${learnedHtml()}
       <details class="adv">
         <summary>מתקדם – לא חובה, האתר לומד את הדוד לבד</summary>
         <p class="note">אם אתם יודעים פרטים על הדוד – אפשר להזין, וזה יעזור ללמידה להתחיל קרוב יותר. ערכים שמסומנים "נלמד" מתעדכנים מהמקלחות שנרשמות.</p>
@@ -1280,6 +1343,24 @@
       el.addEventListener('toggle', () => store.set(key, el.open));
     });
     if (window.HWM && HWM.applyTab) HWM.applyTab();
+  }
+
+  // What the learning found, month by month (100% = an average tank)
+  function learnedHtml() {
+    const at = cfg.driftAt || Date.now();
+    const eff = cfg.effMonths && cfg.effMonths.length ? cfg.effMonths : [cfg.eff];
+    const heat = cfg.heatMonths && cfg.heatMonths.length ? cfg.heatMonths : [cfg.heaterEff];
+    const elec = fam.boilers.length > 0;
+    const day = (t) => localStr(t).slice(5, 10).split('-').reverse().join('.');
+    const bar = (r) => `<span class="mbar"><i style="width:${Math.min(100, r * 50).toFixed(0)}%"></i></span> ${ltr(Math.round(r * 100) + '%')}`;
+    const rows = eff.map((e, b) => `<tr><td>${b ? `${ltr(day(at - (b + 1) * BLOCK))}–${ltr(day(at - b * BLOCK))}` : '30 הימים האחרונים'}</td>
+      <td>${bar(e / DEFAULTS.eff)}</td>${elec ? `<td>${bar((heat[b] ?? heat[heat.length - 1]) / DEFAULTS.heaterEff)}</td>` : ''}</tr>`).join('');
+    return `<div class="learned-box">
+      <h3>🧠 מה האתר למד על הדוד</h3>
+      <p class="note">כמה מהר הדוד שלכם מתחמם בכל חודש, ביחס לדוד ממוצע (<span dir="ltr">100%</span>). ירידה יכולה לרמז על קולטים מאובקים או אבנית בגוף החימום; עלייה – למשל אחרי גשם שניקה את הקולטים.</p>
+      <table class="months"><thead><tr><th>תקופה</th><th>מהשמש</th>${elec ? '<th>מהדוד החשמלי</th>' : ''}</tr></thead><tbody>${rows}</tbody></table>
+      <p class="note">שמירת חום: חצי מהחום שמעל טמפ׳ האוויר נשאר בדוד אחרי כ-${ltr(Math.round(cfg.tau * Math.LN2))} שעות. כמה כל אחד צורך – בלשונית "משפחה".${cfg.effMonths ? '' : ' (הפירוט לפי חודשים יופיע אחרי הלמידה הבאה.)'}</p>
+    </div>`;
   }
 
   // Show exactly five journal rows; the rest scroll inside the box (rows wrap on narrow screens)
