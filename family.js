@@ -30,7 +30,10 @@
     perPerson: 40,    // default liters of shower-temperature water per shower
     morning: '07:00',
     evening: '19:00',
-    kwhPrice: 0.6352  // ₪ per kWh, Israeli home tariff incl. VAT (July 2026) – for the savings card
+    kwhPrice: 0.6352, // ₪ per kWh, Israeli home tariff incl. VAT (July 2026) – for the savings card
+    effMonths: null,  // learned sun / element factor per past month (0 = the last 30 days), as of driftAt
+    heatMonths: null,
+    driftAt: null
   };
   // Settings migrations. 2: tilted-collector irradiance with temperature-dependent losses, so
   // calibration learned under the old horizontal model starts again. 3: seasonal shower temperature.
@@ -260,7 +263,10 @@
   const need = (m) => (m && m.liters != null ? m.liters : cfg.perPerson);
   // °C the tank loses per liter of shower-temperature water (energy balance, fully mixed tank)
   const perLiter = () => Math.max(1, tsh() - tin()) / cfg.liters;
-  const airMean = () => (wx ? wx.airMean : 20); // computed once per forecast (it's used in every simulation step)
+  // The season's air temperature: the average of the 14 days before the simulated hour while simulating
+  // (so a shower last winter is judged with winter's tap and shower temperatures), and of the last 14 days otherwise
+  let seasonAir = null;
+  const airMean = () => seasonAir ?? (wx ? wx.airNow : 20);
   // Comfortable shower temperature follows the season too: ~41° when it's 13° out, ~37° at 28°
   // (air: the season's air temperature; the savings estimate passes an older date's)
   function tsh(air = airMean()) {
@@ -286,8 +292,8 @@
 
   // Useful heat from the collector over `hrs` hours, in °C of tank temperature. Flat-plate model:
   // optical gain minus a loss that grows with (tank − air), so cold days deliver less for the same sun.
-  function solarGain(T, h, hrs) {
-    const q = cfg.area * (cfg.eff * (h.gti || 0) - cfg.ul * (T - (h.ta ?? tin()))); // W
+  function solarGain(T, h, hrs, eff = cfg.eff) {
+    const q = cfg.area * (eff * (h.gti || 0) - cfg.ul * (T - (h.ta ?? tin()))); // W
     if (q <= 0 || T >= cfg.tankMax) return 0; // thermosiphon stops when it would lose heat, or at the limit
     return Math.min(q * 3600 * hrs / 1000 / (cfg.liters * CP), cfg.tankMax - T);
   }
@@ -323,13 +329,20 @@
   // Simulates in 15-minute steps; returns the tank temperature just before stopAt, the trace,
   // and the solar heating per local date ({ total, soFar } in °C). `extra`: what-if showers
   // ({ t, member, outcome: 'planned' }) added on top of the logged ones.
+  // The tank forgets within a few days, so it starts 10 days before (keeps planning fast with months of weather).
   function run(stopAt = Infinity, extra = []) {
-    const H = wx.hours, now = Date.now(), spans = spansOf(now);
-    const logs = fam.logs.filter(l => l.t >= H[0].start).concat(extra).sort((a, b) => a.t - b.t);
-    let T = (H[0].ta ?? tin()) + 5, li = 0;
+    const H = wx.hours, now = Date.now();
+    const from = Math.max(H[0].start, Math.min(stopAt, now) - 10 * DAY);
+    const i0 = Math.max(0, H.findIndex(h => h.end > from));
+    const spans = spansOf(now).filter(s => s[1] > H[i0].start);
+    const logs = fam.logs.filter(l => l.t >= H[i0].start).concat(extra).sort((a, b) => a.t - b.t);
+    let T = (H[i0].ta ?? tin()) + 5, li = 0;
     const pts = [], byDay = {}, obs = [];
     const gainsByDate = () => Object.fromEntries(Object.entries(byDay).map(([k, g]) => [new Date(k * DAY).toISOString().slice(0, 10), g]));
-    for (const h of H) {
+    try {
+    for (let i = i0; i < H.length; i++) {
+      const h = H[i];
+      seasonAir = h.air;
       for (let a = h.start; a < h.end; a += STEP) {
         const b = a + STEP;
         pts.push({ t: a, T });
@@ -348,6 +361,7 @@
         T = step(T, h, a, b, spans, sun);
       }
     }
+    } finally { seasonAir = null; }
     pts.push({ t: H[H.length - 1].end, T });
     return { T, pts, gains: gainsByDate(), obs };
   }
@@ -383,42 +397,94 @@
   // For the accuracy score the three main answers are compared: hot to the end / ran out / none
   const coarse = (o) => (o === 'plenty' || o === 'edge' ? 'full' : o);
 
-  // Lean re-simulation for learning: only the tank temperature just before each logged shower
-  function tempsBeforeShowers(logs) {
-    const H = wx.hours, spans = spansOf(Date.now()), out = [];
-    let T = (H[0].ta ?? tin()) + 5, li = 0;
-    for (const h of H) {
-      for (let a = h.start; a < h.end && li < logs.length; a += STEP) {
-        const b = a + STEP;
-        while (li < logs.length && logs[li].t < b) { out.push(T); T = applyLog(T, logs[li]); li++; }
-        T = step(T, h, a, b, spans, solarGain(T, h, 0.25));
+  // Lean re-simulation for learning: only the tank temperature just before each logged shower (and the
+  // season then). Everything that doesn't depend on the learned factors – which weather hour each 15-minute
+  // step is in, how long the boiler was on in it, which showers come before it – is laid out once (simPlan)
+  // and reused by every trial of the fit. Weeks without showers are skipped: each stretch of showers starts
+  // simulating 3 days before its first one, by which time the tank has forgotten where it started.
+  function simPlan(logs) {
+    const H = wx.hours, spans = spansOf(Date.now());
+    const hi = [], on = [], reset = [], logEnd = [], blk = [], now = Date.now();
+    let li = 0, i = 0;
+    while (li < logs.length) {
+      const segStart = Math.max(H[0].start, logs[li].t - 3 * DAY);
+      while (i < H.length && H[i].end <= segStart) i++;
+      let first = true;
+      for (; i < H.length; i++) {
+        const h = H[i];
+        for (let a = Math.max(h.start, Math.floor(segStart / STEP) * STEP); a < h.end; a += STEP) {
+          while (li < logs.length && logs[li].t < a + STEP) li++;
+          hi.push(i); on.push(overlap(spans, a, a + STEP) / HOUR); reset.push(first ? 1 : 0); logEnd.push(li);
+          blk.push(Math.max(0, Math.floor((now - a) / BLOCK)));
+          first = false;
+        }
+        // the stretch ends after its last shower, unless the next one is within a week
+        if (li >= logs.length || (li > 0 && logs[li].t - logs[li - 1].t > 7 * DAY && h.end > logs[li - 1].t)) { i++; break; }
       }
+      if (i >= H.length) break;
     }
+    return { logs, n: hi.length, hi, on, reset, logEnd, blk, blocks: blk.length ? Math.max(...blk) + 1 : 1 };
+  }
+
+  // drift: per-month factors { eff: [], heat: [] } (index 0 = the last 30 days); without it, today's for all
+  function tempsBeforeShowers(P, drift) {
+    const H = wx.hours, logs = P.logs, out = [];
+    const decay = Math.exp(-0.25 / cfg.tau), stat = Math.min(cfg.heaterMax, cfg.tankMax);
+    const heat = cfg.heaterKw * 3600 / (cfg.liters * CP); // °C per hour of element at full strength
+    let T = 20, li = 0;
+    try {
+      for (let s = 0; s < P.n; s++) {
+        const h = H[P.hi[s]];
+        seasonAir = h.air;
+        if (P.reset[s]) T = (h.ta ?? tin()) + 5;
+        while (li < P.logEnd[s]) { out.push({ T, air: h.air }); T = applyLog(T, logs[li]); li++; }
+        const b = P.blk[s];
+        T += solarGain(T, h, 0.25, drift ? drift.eff[b] : cfg.eff);
+        if (P.on[s] > 0 && T < stat) T = Math.min(stat, T + heat * (drift ? drift.heat[b] : cfg.heaterEff) * P.on[s]);
+        const ta = h.ta ?? tin();
+        T = Math.min(ta + (T - ta) * decay, cfg.tankMax);
+      }
+    } finally { seasonAir = null; }
+    while (out.length < logs.length) out.push({ T, air: airMean() });
     return out;
   }
 
+  // Up to a year of showers is learned from. Recent ones count more – collectors get dusty and are washed by
+  // rain, an element scales up – while last season's still help when it comes round again.
+  // How well the collectors and the element work may change from month to month (each month has its own
+  // value, kept close to its neighbours); people's habits and the tank are taken as steady, recent showers
+  // counting more.
+  const HISTORY = 365 * DAY, HALF_LIFE = 90 * DAY, MIN_WEIGHT = 0.25, BLOCK = 30 * DAY, DRIFT_WEIGHT = 6;
+  const weight = (l, now) => Math.max(MIN_WEIGHT, Math.pow(0.5, (now - l.t) / HALF_LIFE));
+
   function learnableLogs() {
-    const start = wx.hours[0].start, now = Date.now();
+    const start = Math.max(wx.hours[0].start, Date.now() - HISTORY), now = Date.now();
     return fam.logs.filter(l => l.t >= start && l.t <= now && !l.boiler).sort((a, b) => a.t - b.t);
   }
 
-  function negLogLik(logs) {
-    const Ts = tempsBeforeShowers(logs);
+  // probability of each logged answer under the current factors (with the season at the time of the shower)
+  function probsAt(o, m) {
+    seasonAir = o.air;
+    try { return outcomeProbs(o.T, drawOf(m)); } finally { seasonAir = null; }
+  }
+
+  function negLogLik(P, now, drift) {
+    const Ts = tempsBeforeShowers(P, drift);
     let e = 0;
-    logs.forEach((l, i) => { e -= Math.log(Math.max(1e-6, outcomeProbs(Ts[i], drawOf(member(l.member)))[l.outcome])); });
+    P.logs.forEach((l, i) => { e -= weight(l, now) * Math.log(Math.max(1e-6, probsAt(Ts[i], member(l.member))[l.outcome])); });
     return e;
   }
 
-  // How often the model's most likely outcome matches what was logged (shown to the family)
+  // How often the model's most likely outcome matches what was logged in the last month (shown to the family)
   function accuracy() {
     const logs = learnableLogs();
     if (logs.length < 5) return null;
-    const Ts = tempsBeforeShowers(logs);
+    const Ts = tempsBeforeShowers(simPlan(logs)), monthAgo = Date.now() - 30 * DAY;
     // right after someone had no hot water, the next one won't either – too easy to count
-    const fair = logs.map((l, i) => i).filter(i => !(i && logs[i - 1].outcome === 'none' && logs[i].t - logs[i - 1].t < 2 * HOUR));
+    const fair = logs.map((l, i) => i).filter(i => logs[i].t >= monthAgo && !(i && logs[i - 1].outcome === 'none' && logs[i].t - logs[i - 1].t < 2 * HOUR));
     if (fair.length < 5) return null;
     const hits = fair.filter(i => {
-      const p = outcomeProbs(Ts[i], drawOf(member(logs[i].member)));
+      const p = probsAt(Ts[i], member(logs[i].member));
       return ['full', 'partial', 'none'].reduce((a, b) => (p[a] >= p[b] ? a : b)) === coarse(logs[i].outcome);
     }).length;
     return { pct: Math.round(hits / fair.length * 100), n: fair.length };
@@ -427,24 +493,32 @@
   function fit() {
     const logs = learnableLogs(), now = Date.now();
     if (!logs.length) return [];
+    const P = simPlan(logs);
+    // the sun and the element get a value per month (0 = the last 30 days), starting from the last fit's
+    // (kept in the settings, shifted by the months since) or else from today's
+    const since = cfg.driftAt ? Math.round((now - cfg.driftAt) / BLOCK) : 0;
+    const start = (saved, today) => Array.from({ length: P.blocks }, (_, b) =>
+      !b ? today : (saved && saved.length ? saved[Math.min(saved.length - 1, Math.max(0, b - since))] : today));
+    const drift = { eff: start(cfg.effMonths, cfg.eff), heat: start(cfg.heatMonths, cfg.heaterEff) };
     const knob = (get, set, prior, lo, hi, group) => ({ get, set, prior, lo, hi, group });
-    const knobs = [
-      knob(() => cfg.eff, v => { cfg.eff = v; }, DEFAULTS.eff, 0.15, 1.5, 'heat'),
-      knob(() => cfg.tau, v => { cfg.tau = v; }, DEFAULTS.tau, 10, 150)
-    ];
-    if (fam.boilers.some(b => runEnd(b, now) > wx.hours[0].start)) knobs.push(knob(() => cfg.heaterEff, v => { cfg.heaterEff = v; }, DEFAULTS.heaterEff, 0.3, 2, 'heat'));
+    const monthly = (arr, prior, lo, hi, group) => arr.map((_, b) => knob(() => arr[b], v => { arr[b] = v; }, b ? null : prior, lo, hi, group));
+    const sun = monthly(drift.eff, DEFAULTS.eff, 0.15, 1.5, 'sun');
+    const knobs = [...sun, knob(() => cfg.tau, v => { cfg.tau = v; }, DEFAULTS.tau, 10, 150)];
+    const elec = fam.boilers.some(b => runEnd(b, now) > wx.hours[0].start) ? monthly(drift.heat, DEFAULTS.heaterEff, 0.3, 2, 'elec') : [];
+    knobs.push(...elec);
     for (const id of new Set(logs.map(l => l.member))) {
       const m = member(id);
       if (m) knobs.push(knob(() => need(m), v => { m.liters = v; }, cfg.perPerson, 5, 250, 'use'));
     }
     // Directions to search: each factor alone, plus factors that can stand in for each other moved
-    // together (sun + boiler heating; everyone's usage), or the search stalls where one compensates
+    // together (every month's sun; sun + boiler heating; everyone's usage), or the search stalls where one compensates
     const moves = knobs.map(k => [k]);
-    for (const g of ['heat', 'use']) {
-      const ks = knobs.filter(k => k.group === g);
-      if (ks.length > 1) moves.push(ks);
-    }
-    const cost = () => negLogLik(logs) + PRIOR_WEIGHT * knobs.reduce((s, k) => s + sq(Math.log(k.get() / k.prior)), 0);
+    for (const ks of [sun, elec, [...sun, ...elec], knobs.filter(k => k.group === 'use')]) if (ks.length > 1) moves.push(ks);
+    // the prior pulls today's values (and tau, and each person) toward the defaults; neighbouring months toward each other
+    const smooth = (arr) => arr.reduce((s, v, b) => s + (b ? sq(Math.log(v / arr[b - 1])) : 0), 0);
+    const cost = () => negLogLik(P, now, drift)
+      + PRIOR_WEIGHT * knobs.reduce((s, k) => s + (k.prior ? sq(Math.log(k.get() / k.prior)) : 0), 0)
+      + DRIFT_WEIGHT * (smooth(drift.eff) + (elec.length ? smooth(drift.heat) : 0));
     // Multiplicative coordinate search, coarse to fine
     let best = cost();
     for (const f of [1.6, 1.25, 1.08, 1.02]) {
@@ -461,7 +535,11 @@
         }
       }
     }
-    const ops = [{ op: 'cfg', cfg: { eff: +cfg.eff.toFixed(3), tau: +cfg.tau.toFixed(1), heaterEff: +cfg.heaterEff.toFixed(3) } }];
+    cfg.eff = drift.eff[0];
+    if (elec.length) cfg.heaterEff = drift.heat[0];
+    const r3 = (arr) => arr.map(v => +v.toFixed(3));
+    Object.assign(cfg, { effMonths: r3(drift.eff), heatMonths: r3(drift.heat), driftAt: now });
+    const ops = [{ op: 'cfg', cfg: { eff: +cfg.eff.toFixed(3), tau: +cfg.tau.toFixed(1), heaterEff: +cfg.heaterEff.toFixed(3), effMonths: cfg.effMonths, heatMonths: cfg.heatMonths, driftAt: now } }];
     for (const m of fam.members) {
       const n = logs.filter(l => l.member === m.id).length;
       if (n) ops.push({ op: 'member', m: { id: m.id, liters: Math.round(need(m)), n } });
@@ -610,9 +688,11 @@
 
   // ---------- How well we know this home (0–100%): grows with logged showers, and with each named person's ----------
   // ---------- Money: what the sun saved, against heating every logged shower with electricity ----------
-  // Showers older than the fetched month have no weather, so their season is estimated: air temperature
+  // Showers older than the weather data (a year at most) have no weather, so their season is estimated: air temperature
   // swings about ±7° over the year around today's (warmest mid-July in the north, mid-January in the south).
   function airAt(t) {
+    const h = hourAt(t);
+    if (h) return h.air; // real weather when we have it
     const season = (x) => { const d = new Date(x); return Math.cos(2 * Math.PI * ((x - Date.UTC(d.getUTCFullYear(), 0, 1)) / DAY - 200) / 365); };
     return airMean() + (wx.lat < 0 ? -7 : 7) * (season(t) - season(Date.now()));
   }
@@ -994,7 +1074,12 @@
       commit([{ op: 'member', m: { id, name, liters: null, n: 0, skip: {} } }]);
       Object.assign(sheet, { who: id, usual: null, adding: false });
       renderSheet();
-    } else if (d.sheetOut) logShower(d.sheetOut);
+    } else if (d.sheetOut) {
+      // learning from a year of showers can take a moment on a phone: show it's working first
+      w.querySelectorAll('[data-sheet-out]').forEach(x => { x.disabled = true; });
+      b.lastChild.textContent = ' שומר ולומד…';
+      setTimeout(() => logShower(d.sheetOut), 30);
+    }
     else if (d.sheetBoil) {
       commit([{ op: 'boiler', b: { id: uid(), t: Date.now(), min: d.sheetBoil === 'open' ? null : +d.sheetBoil } }]);
       closeSheet();
@@ -1338,7 +1423,7 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     } else if (b.id === 'resetLearn') {
       if (!confirm('לאפס את מה שנלמד (ליטרים לכל אחד וכיול הדוד)? יומן המקלחות יישמר.')) return;
-      commit([...fam.members.map(m => ({ op: 'member', m: { id: m.id, liters: null, n: 0 } })), { op: 'cfg', cfg: { eff: DEFAULTS.eff, heaterEff: DEFAULTS.heaterEff, tau: DEFAULTS.tau } }]);
+      commit([...fam.members.map(m => ({ op: 'member', m: { id: m.id, liters: null, n: 0 } })), { op: 'cfg', cfg: { eff: DEFAULTS.eff, heaterEff: DEFAULTS.heaterEff, tau: DEFAULTS.tau, effMonths: null, heatMonths: null, driftAt: null } }]);
     } else if (b.id === 'connectBtn') {
       b.disabled = true; b.textContent = 'מתחבר…';
       connect($('syncUrl').value, $('syncKey').value);
@@ -1415,19 +1500,92 @@
     }
   });
 
+  // ---------- Weather ----------
+  // Open-Meteo hourly data → [{ start, end, gti, ta }] (gti: radiation on this family's collector)
+  function hoursOf(d, off) {
+    const h = d.hourly;
+    const gti = h.tank_gti || (h.global_tilted_irradiance && h.global_tilted_irradiance.some(v => v != null) ? h.global_tilted_irradiance : h.shortwave_radiation);
+    return h.time.map((t, i) => {
+      const end = Date.parse(t + ':00Z') - off;
+      return { start: end - HOUR, end, gti: Math.max(0, gti[i] ?? 0), ta: h.temperature_2m?.[i] };
+    });
+  }
+  // Each hour's season: the average air temperature of the 14 days before it
+  function addSeason(hours) {
+    const W = 14 * 24;
+    let sum = 0, n = 0;
+    hours.forEach((h, i) => {
+      if (h.ta != null) { sum += h.ta; n++; }
+      const old = hours[i - W];
+      if (old && old.ta != null) { sum -= old.ta; n--; }
+      h.air = n ? sum / n : 20;
+    });
+  }
+  const hourAt = (t) => { // binary search: the weather hour containing t, or null outside the data
+    const H = wx.hours;
+    let lo = 0, hi = H.length - 1;
+    if (!H.length || t < H[0].start || t >= H[hi].end) return null;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (H[mid].end <= t) lo = mid + 1; else hi = mid; }
+    return H[lo];
+  };
+  let forecastHours = [], archiveHours = [];
+  function setHours() {
+    const first = forecastHours.length ? forecastHours[0].start : Infinity;
+    wx.hours = archiveHours.filter(h => h.end <= first).concat(forecastHours);
+    addSeason(wx.hours);
+    const h = hourAt(Math.min(Date.now(), wx.hours[wx.hours.length - 1].start));
+    wx.airNow = h ? h.air : 20;
+  }
+
   function onWeather(d) {
     const off = d.utc_offset_seconds * 1000;
-    const gti = d.hourly.tank_gti || d.hourly.global_tilted_irradiance || d.hourly.shortwave_radiation; // for this family's collector
-    const temps = d.hourly.temperature_2m.filter(v => v != null);
-    wx = {
-      off, lat: d.latitude, lon: d.longitude,
-      airMean: temps.length ? temps.reduce((a, b) => a + b, 0) / temps.length : 20,
-      hours: d.hourly.time.map((t, i) => {
-        const end = Date.parse(t + ':00Z') - off;
-        return { start: end - HOUR, end, gti: gti[i], ta: d.hourly.temperature_2m?.[i] };
-      })
-    };
+    wx = { off, lat: d.latitude, lon: d.longitude, hours: [] };
+    forecastHours = hoursOf(d, off);
+    setHours();
     render();
+    loadHistory().finally(refitOnce);
+  }
+
+  // Showers older than the forecast's 3 months (up to a year) get their weather from Open-Meteo's historical
+  // archive (in UTC, so daylight saving can't shift it). It's fetched at most once a day and kept on this device.
+  async function loadHistory() {
+    if (!wx || !forecastHours.length) return;
+    const now = Date.now(), first = forecastHours[0].start;
+    const oldest = Math.min(...fam.logs.filter(l => l.t >= now - HISTORY && l.outcome !== 'planned').map(l => l.t));
+    if (!(oldest < first)) return;
+    const day = (t) => new Date(t).toISOString().slice(0, 10);
+    const q = { lat: wx.lat, lon: wx.lon, tilt: cfg.tilt, az: cfg.azimuth, from: day(oldest - 3 * DAY), to: day(first - DAY) };
+    const key = JSON.stringify(q);
+    let cached = null;
+    try { cached = JSON.parse(localStorage.getItem('hwm.history') || 'null'); } catch {}
+    let d = cached && cached.key === key ? cached.d : null;
+    if (!d) {
+      try {
+        const r = await fetch('https://archive-api.open-meteo.com/v1/archive?latitude=' + q.lat + '&longitude=' + q.lon +
+          '&start_date=' + q.from + '&end_date=' + q.to + '&hourly=global_tilted_irradiance,shortwave_radiation,temperature_2m' +
+          '&tilt=' + q.tilt + '&azimuth=' + q.az + '&timezone=GMT');
+        if (!r.ok) return;
+        d = await r.json();
+        if (!d.hourly || !d.hourly.time) return;
+        try { localStorage.setItem('hwm.history', JSON.stringify({ key, d })); } catch {} // too big for storage: fetch again next time
+      } catch { return; } // offline: learn from the last 3 months for now
+    }
+    archiveHours = hoursOf(d, 0).filter(h => h.ta != null);
+    setHours();
+    render();
+  }
+
+  // The learning runs after each logged shower; once a day it also runs on opening, so a change in the
+  // weather data (more history, a new day) or in how it learns reaches the factors without waiting for a shower.
+  const FIT_VERSION = 2;
+  function refitOnce() {
+    const key = FIT_VERSION + ':' + new Date().toISOString().slice(0, 10);
+    if (!wx || store.get('hwm.refit', '') === key || !learnableLogs().length) return;
+    store.set('hwm.refit', key);
+    const snap = () => JSON.stringify([+cfg.eff.toFixed(3), +cfg.tau.toFixed(1), +cfg.heaterEff.toFixed(3), fam.members.map(m => m.liters == null ? null : Math.round(m.liters))]);
+    const before = snap();
+    const ops = fit();
+    if (snap() !== before) commit(ops); else saveLocal();
   }
   document.addEventListener('hwm:weather', (e) => onWeather(e.detail));
   if (window.HWM && HWM.weather) onWeather(HWM.weather);

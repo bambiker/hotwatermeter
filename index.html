@@ -482,7 +482,7 @@
     $('status').classList.remove('err');
     const url = (tilt, az) => 'https://api.open-meteo.com/v1/forecast?latitude=' + loc.lat + '&longitude=' + loc.lon +
       '&hourly=global_tilted_irradiance,shortwave_radiation,cloud_cover,temperature_2m&tilt=' + tilt + '&azimuth=' + az +
-      '&past_days=30&forecast_days=2&timezone=auto'; // a month back: the family model learns from it
+      '&past_days=92&forecast_days=2&timezone=auto'; // 3 months back (the most the forecast gives): the family model learns from it
     const get = async (u) => { const r = await fetch(u); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
     try {
       // the index uses the standard collector; the tank model needs the family's own orientation
@@ -503,13 +503,18 @@
     const nowUtc = Date.now();
     const h = data.hourly;
     const byDate = new Map();
-    // Typical air temperature for each hour of the day over the fetched month: the clear-day ceiling
+    // local "today" at the location; yesterday is the day before it
+    const today = new Date(nowUtc + off).toISOString().slice(0, 10);
+    const yday = new Date(Date.parse(today + 'T12:00:00Z') - 86400000).toISOString().slice(0, 10);
+    const monthAgo = new Date(Date.parse(today + 'T12:00:00Z') - 30 * 86400000).toISOString().slice(0, 10);
+    // Typical air temperature for each hour of the day over the last month: the clear-day ceiling
     // uses it, so it reflects the season rather than whether today happened to be warm or cold
     const typical = Array.from({ length: 24 }, (_, hr) => {
-      const v = h.time.map((t, i) => (+t.slice(11, 13) === hr ? h.temperature_2m[i] : null)).filter(x => x != null);
+      const v = h.time.map((t, i) => (t >= monthAgo && +t.slice(11, 13) === hr ? h.temperature_2m[i] : null)).filter(x => x != null);
       return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 20;
     });
     h.time.forEach((t, i) => {
+      if (t.slice(0, 10) !== today && t.slice(0, 10) !== yday) return; // only the two days shown
       // t is local wall time "YYYY-MM-DDTHH:MM"; convert to a UTC instant
       const endUtc = Date.parse(t + ':00Z') - off;
       const date = t.slice(0, 10);
@@ -524,9 +529,6 @@
         future: endUtc > nowUtc
       });
     });
-    // local "today" at the location; yesterday is the day before it
-    const today = new Date(nowUtc + off).toISOString().slice(0, 10);
-    const yday = new Date(Date.parse(today + 'T12:00:00Z') - 86400000).toISOString().slice(0, 10);
     return [yday, today].filter(d => byDate.has(d)).map((date) => {
       const hours = byDate.get(date);
       const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
@@ -809,7 +811,7 @@
   })();
 </script>
 <!-- ?v= changes with each release, so a phone never pairs a new page with an old cached script -->
-<script src="config.js?v=20261027d"></script>
-<script src="family.js?v=20261027d"></script>
+<script src="config.js?v=20261028b"></script>
+<script src="family.js?v=20261028b"></script>
 </body>
 </html>
