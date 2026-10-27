@@ -631,13 +631,26 @@
   }
   // who already logged a shower this evening
   const showeredTonight = (now) => { const t = tonightAt(now); return new Set(fam.logs.filter(l => l.t >= t - 3 * HOUR && l.t <= now).map(l => l.member)); };
-  const eveningPeople = () => fam.members.filter(m => !isGeneric(m) && !(m.skip && m.skip.evening));
+  const slotPeople = (slot) => fam.members.filter(m => !isGeneric(m) && !(m.skip && m.skip[slot]));
+  const eveningPeople = () => slotPeople('evening');
+  // who showered in the last few hours (won't shower again now)
+  const showeredRecently = (now) => new Set(fam.logs.filter(l => l.t <= now && now - l.t < 6 * HOUR).map(l => l.member));
+
+  // What the main card answers: this evening's showers until they start; from then on – through the
+  // night and the morning showers – right now
+  function heroTarget(now) {
+    const day0 = dayStart(now);
+    const at = (hm) => { const [h, m] = hm.split(':').map(Number); return day0 + h * HOUR + m * 60000; };
+    if (now >= at(cfg.evening) || now < at(cfg.morning) + 2 * HOUR)
+      return { t: now, now: true, slot: now - day0 >= 12 * HOUR ? 'evening' : 'morning' };
+    return { t: at(cfg.evening), now: false, slot: 'evening' };
+  }
 
   // Heating for each person separately, right before their own shower: just enough for them, in the
   // shower order (the sun's share goes to the first ones). minutes: 0 = no boiler needed; capped: even the
   // thermostat's maximum won't last them to the end.
-  function heatEach(t, away) {
-    const p = plan(t, 'evening', [], away);
+  function heatEach(t, away, slot = 'evening') {
+    const p = plan(t, slot, [], away);
     const stat = Math.min(cfg.heaterMax, cfg.tankMax);
     const perMin = cfg.heaterKw * cfg.heaterEff * 60 / (cfg.liters * CP); // °C per minute of boiler
     let T = p.T0;
@@ -685,17 +698,19 @@
   }
 
   function showersTonight(now) {
-    const t = tonightAt(now);
-    const away = awayTonight(now);
+    const { t, now: isNow, slot } = heroTarget(now);
+    // who already showered (this evening, or in the last hours) won't again; plus who was marked away
+    const done = isNow ? showeredRecently(now) : showeredTonight(now);
+    const away = new Set([...awayTonight(now), ...done]);
     const at = (time, away) => {
       if (time < wx.hours[0].start || time > wx.hours[wx.hours.length - 1].end) return null;
-      const p = plan(time, 'evening', [], away);
-      if (p.total || (away && away.size && eveningPeople().length)) return { ok: p.rows.filter(r => r.st === 'ok').length, total: p.total };
+      const p = plan(time, slot, [], away);
+      if (p.total || (away && away.size && slotPeople(slot).length)) return { ok: p.rows.filter(r => r.st === 'ok').length, total: p.total };
       return { n: anonShowers(p.T0) }; // nobody listed: showers of the default (or learned 'someone') size
     };
     const tonight = at(t, away), yday = at(t - DAY), tmrw = at(t + DAY);
     const say = (x) => x.total != null ? `${ltr(x.ok)} מתוך ${ltr(x.total)}` : `~${ltr(x.n)} מקלחות`;
-    return { tonight, yday, tmrw, t, say };
+    return { tonight, yday, tmrw, t, say, isNow, slot, away, done };
   }
 
   // ---------- When to shower: move someone to midday so the sun can make up for it ----------
@@ -930,37 +945,42 @@
   function renderHero(now, cur, sh, sunToday) {
     const box = $('summary');
     if (!sh.tonight) { box.innerHTML = ''; return; }
-    const tomorrowEve = dayStart(sh.t) > dayStart(now);
-    const when = tomorrowEve ? 'מחר בערב' : 'הערב';
+    const when = sh.isNow ? 'עכשיו' : 'הערב';
     const tn = sh.tonight;
     let head, body = '';
     if (tn.total != null) {
-      const away = awayTonight(now);
-      const he = heatEach(sh.t, away);
+      const he = heatEach(sh.t, sh.away, sh.slot);
       const all = tn.ok === tn.total;
-      head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) בלי להדליק דוד יספיק</div>
-        <div class="big">${!tn.total ? 'אף אחד לא מתקלח' : all ? (tn.total === 1 ? 'מספיק' : 'לכולם') : tn.ok ? `ל־${ltr(tn.ok)} מתוך ${ltr(tn.total)}` : 'לאף אחד'}</div>`;
+      if (!tn.total) {
+        // nobody left to shower: say so, and what's still in the tank for anyone who wants one after all
+        const n = anonShowers(he.p.T0), perMin = cfg.heaterKw * cfg.heaterEff * 60 / (cfg.liters * CP);
+        const mins = Math.ceil(Math.max(0, tsh() + drawOf(null) - he.p.T0) / perMin);
+        head = `<div class="k">${when} (${ltr(hhmm(sh.t))})</div>
+          <div class="big">${sh.done.size ? 'כולם כבר התקלחו' : 'אף אחד לא מתקלח'}</div>
+          <p class="note">${n ? `בדוד נשאר מספיק לעוד ~${ltr(n)} ${n === 1 ? 'מקלחת' : 'מקלחות'} בלי דוד` : `למקלחת נוספת צריך להדליק דוד כ-${ltr(mins)} דקות`}</p>`;
+      } else head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) בלי להדליק דוד יספיק</div>
+        <div class="big">${all ? (tn.total === 1 ? 'מספיק' : 'לכולם') : tn.ok ? `ל־${ltr(tn.ok)} מתוך ${ltr(tn.total)}` : 'לאף אחד'}</div>`;
       const row = new Map(he.rows.map(r => [r.m.id, r]));
-      const done = showeredTonight(now);
+      const done = sh.done;
       const item = (m) => {
         const r = row.get(m.id);
-        if (done.has(m.id) && !tomorrowEve) return `<li class="ok"><button type="button" data-away="${m.id}" aria-pressed="false" disabled><span class="dot">${CHECK}</span>${esc(m.name)}<span class="st">כבר התקלח/ה</span></button></li>`;
-        if (!r) return `<li class="away"><button type="button" data-away="${m.id}" aria-pressed="true"><span class="dot"></span>${esc(m.name)}<span class="st">לא הערב</span></button></li>`;
+        if (done.has(m.id)) return `<li class="ok"><button type="button" data-away="${m.id}" aria-pressed="false" disabled><span class="dot">${CHECK}</span>${esc(m.name)}<span class="st">כבר התקלח/ה</span></button></li>`;
+        if (!r) return `<li class="away"><button type="button" data-away="${m.id}" aria-pressed="true"><span class="dot"></span>${esc(m.name)}<span class="st">${sh.isNow ? 'לא עכשיו' : 'לא הערב'}</span></button></li>`;
         const st = !r.min ? 'בלי דוד' : `🔌 ${ltr(r.min)} דק׳${r.capped ? ' (גם אז לא עד הסוף)' : ''}`;
         return `<li class="${r.min ? 'heat' : 'ok'}"><button type="button" data-away="${m.id}" aria-pressed="false"><span class="dot">${r.min ? '' : CHECK}</span>${esc(m.name)}<span class="st">${st}</span></button></li>`;
       };
-      body = `<ul class="people">${eveningPeople().map(item).join('')}</ul>
+      body = `<ul class="people">${slotPeople(sh.slot).map(item).join('')}</ul>
         ${he.total ? `<p class="advice warn">🔌 כל אחד מדליק את הדוד לפני המקלחת שלו, לפי הדקות שליד השם – סה״כ כ-${ltr(he.total)} דקות.${why('heat-each-or-all')}</p>` : ''}
         ${(() => { const th = heatThrough(he); return th && he.total - th.lead >= 5 ? `<p class="note">אפשר גם להדליק כ-${ltr(th.lead)} דקות לפני המקלחת הראשונה ולהשאיר דלוק עד שכולם מתקלחים ברצף: הדוד ממשיך לחמם בזמן המקלחות, אז כולם מסיימים כ-${ltr(he.total - th.lead)} דקות מוקדם יותר. החשמל כמעט זהה (כ-${ltr(th.total)} דקות דוד) – אבל מים חמים "שלא נגמרים" נוטים להאריך מקלחות.</p>` : ''; })()}
-        <p class="note">לחיצה על שם: לא מתקלח/ת הערב (לא בבית, התקלח/ה בבריכה…) – והחישוב מתעדכן.</p>`;
+        <p class="note">לחיצה על שם: לא מתקלח/ת ${sh.isNow ? 'עכשיו' : 'הערב'} (לא בבית, התקלח/ה בבריכה…) – והחישוב מתעדכן.</p>`;
     } else {
       const n = tn.n;
       head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) בלי להדליק דוד ${n ? 'יספיק בערך ל־' : ''}</div>
         <div class="big">${n === 0 ? 'אין מים חמים' : n === 1 ? 'מקלחת אחת' : `${ltr(n)} מקלחות`}</div>
         <div class="icons">${Array(Math.min(n, 8)).fill(SHOWER).join('')}<span class="off">${SHOWER}</span></div>`;
     }
-    const sunLeft = sunToday && !tomorrowEve ? sunToday.total - sunToday.soFar : 0;
-    const strip = [sh.yday && `${tomorrowEve ? 'הערב' : 'אתמול'}: ${sh.say(sh.yday)}`, sh.tmrw && `מחר: ${sh.say(sh.tmrw)}`].filter(Boolean).join(' · ');
+    const sunLeft = sunToday && !sh.isNow ? sunToday.total - sunToday.soFar : 0;
+    const strip = [sh.yday && `אתמול${sh.isNow ? ' באותה שעה' : ''}: ${sh.say(sh.yday)}`, sh.tmrw && `מחר${sh.isNow ? ' באותה שעה' : ''}: ${sh.say(sh.tmrw)}`].filter(Boolean).join(' · ');
     box.innerHTML = `<section class="card hero">
       <div class="hero-top">
         ${tankSvg(cur)}
