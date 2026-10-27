@@ -180,7 +180,7 @@
   // The location card lives at the top for a guest, and inside the family settings in a family
   function placeHome() {
     const card = $('locCard');
-    const slot = sync.conf && $('locSlot');
+    const slot = sync.conf && window.HWM && HWM.loc && $('locSlot');
     (slot || $('locHome')).appendChild(card);
     const fp = $('famPlace');
     fp.hidden = !(sync.conf && window.HWM && HWM.loc);
@@ -188,8 +188,8 @@
   }
   document.addEventListener('click', (e) => {
     if (e.target.id !== 'editHome') return;
+    HWM.showTab('settings');
     $('cfgBox').open = true;
-    $('cfgBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
   function commit(ops) {
@@ -619,7 +619,7 @@
       : Math.min(1, logs.length / KNOW_PER_PERSON) * 0.5;
     const pct = Math.min(99, Math.round(100 * (0.5 * overall + 0.5 * people)));
     const least = named.map(m => ({ m, n: nOf(m) })).filter(x => x.n < KNOW_PER_PERSON).sort((a, b) => a.n - b.n)[0];
-    const hint = !named.length ? 'הוסיפו את בני הבית (למטה), וכל אחד יילמד בנפרד'
+    const hint = !named.length ? 'הוסיפו את בני הבית (בלשונית "משפחה"), וכל אחד יילמד בנפרד'
       : least ? (least.n ? `עוד ${ltr(KNOW_PER_PERSON - least.n)} מקלחות של ${esc(least.m.name)}, ונכיר גם אותן` : `עוד לא נרשמה מקלחת של ${esc(least.m.name)}`)
       : 'כל מקלחת שנרשמת עוד מדייקת את התחזית';
     return { pct, hint, n: logs.length, named: named.length };
@@ -702,7 +702,7 @@
         <button type="button" id="wDone" class="primary" ${welcome.added.length ? '' : 'disabled'}>סיימתי</button>
         <button type="button" id="wSkip">אני לבד / בלי שמות</button>
       </div>
-      <p class="note">בלי שמות נניח שכל המקלחות הן של אדם אחד, ולא נלמד מי אוהב מקלחת ארוכה או חמה במיוחד. אפשר להוסיף שמות גם אחר כך, ב"בני המשפחה".</p>
+      <p class="note">בלי שמות נניח שכל המקלחות הן של אדם אחד, ולא נלמד מי אוהב מקלחת ארוכה או חמה במיוחד. אפשר להוסיף שמות גם אחר כך, בלשונית "משפחה".</p>
     </section>`;
   }
 
@@ -786,7 +786,9 @@
   function renderActions(now) {
     const a = $('actions');
     a.hidden = !wx;
+    $('tabs').hidden = !wx;
     document.body.classList.toggle('has-actions', !!wx);
+    document.body.classList.toggle('has-tabs', !!wx);
     if (!wx) return;
     const on = activeRun(now);
     a.innerHTML = `<button type="button" class="act-shower" data-sheet="log">${SHOWER} התקלחתי</button>
@@ -871,7 +873,7 @@
           ${eve.rows.length ? adviceHtml(eve, false) : ''}
           <div class="boil-grid">${[10, 20, 30, 45, 60, 90].map(m => `<button type="button" data-sheet-boil="${m}">${ltr(m)} דק׳</button>`).join('')}
             <button type="button" class="wide" data-sheet-boil="open">עד שאכבה</button></div>
-          <p class="note">הדלקה מלפני כמה שעות? אפשר לרשום אותה בדיעבד בכרטיס "הדוד החשמלי".</p>`;
+          <p class="note">הדלקה מלפני כמה שעות? אפשר לרשום אותה בדיעבד בלשונית "יומן".</p>`;
     }
     w.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-label="${sheet.kind === 'log' ? 'רישום מקלחת' : 'הדוד החשמלי'}" tabindex="-1">
       <div class="grab"></div><button type="button" class="sheet-close" data-sheet-close aria-label="סגירה">✕</button>${html}</div>`;
@@ -1016,13 +1018,13 @@
         <span>● מקלחת שנרשמה</span>
         <span><i style="background:var(--mid);opacity:.25"></i>דוד חשמלי דלוק</span>
       </div>
-      ${fam.members.some(m => !isGeneric(m)) ? '' : '<p class="note">הוסיפו בני משפחה (למטה) כדי לראות מי יכול להתקלח בכל זמן.</p>'}
+      ${fam.members.some(m => !isGeneric(m)) ? '' : '<p class="note">הוסיפו בני משפחה (בלשונית "משפחה") כדי לראות מי יכול להתקלח בכל זמן.</p>'}
       <div class="slots">${slots.map(s => slotCard(s[0], s[1], s[2], now)).join('')}</div>
       <p class="note">הסדר ברשימה הוא סדר המקלחות. ההערכה כוללת רק הדלקות דוד שנרשמו.</p>
     </section>`;
 
     root.innerHTML = `
-    <section class="card fam" id="logCard">
+    <section class="card fam" id="logCard" data-pane="log">
       <h2>📒 היומן – מקלחות והדלקות דוד${journal.length ? ` (${ltr(journal.length)})` : ''}</h2>
       ${sync.conf ? `<div class="note sync-status">${syncStatusText()}</div>` : '<button type="button" id="openShare" class="linkish">🔗 לשתף את היומן עם כל המשפחה</button>'}
       ${journal.length ? `<div class="log-scroll" id="journal"><table class="logs"><thead><tr><th>מתי</th><th>מי / מה</th><th>תוצאה</th><th></th></tr></thead><tbody>
@@ -1036,7 +1038,7 @@
       </tbody></table></div>` : '<p class="note">עוד לא נרשמו מקלחות. אחרי מקלחת לוחצים על "התקלחתי" בתחתית המסך.</p>'}
     </section>
 
-    <section class="card fam" id="boilerCard">
+    <section class="card fam" id="boilerCard" data-pane="log">
       <h2>🔌 הדוד החשמלי</h2>
       ${active ? `
         <p class="boiler-on">🔥 הדוד דלוק מאז ${ltr(hhmm(active.t))} ·
@@ -1058,7 +1060,7 @@
       <p class="note">מהמקלחות שאחרי הדלקה המודל לומד כמה מהר הדוד שלכם מחמם, וככה ההמלצה "כמה דקות להדליק" משתפרת.</p>
     </section>
 
-    <details class="card fam" id="famBox" ${fam.members.length ? '' : 'open'}>
+    <details class="card fam" id="famBox" data-pane="family" ${fam.members.length ? '' : 'open'}>
       <summary>👨‍👩‍👧 בני המשפחה</summary>
       <p class="note">לא צריך לדעת כלום על הדוד. אחרי כל מקלחת רושמים אם היו מים חמים עד הסוף, והאתר לומד כמה כל אחד צורך ביחס לדוד שלכם – לפי מי התקלח לפניו ולפי השמש באותו יום. עד שיש מספיק מקלחות משתמשים בהערכה של ${cfg.perPerson} ליטר.</p>
       ${(() => { const acc = accuracy(); return acc ? `<p class="acc">🎯 המודל צודק ב-${ltr(acc.pct + '%')} מ-${ltr(acc.n)} המקלחות של החודש האחרון</p>` : ''; })()}
@@ -1074,7 +1076,7 @@
       <div class="add-row"><input id="newName" placeholder="שם (למשל: נועה)"><button type="button" id="addMember">➕ הוספה</button></div>
     </details>
 
-    <details class="card fam" id="shareBox">
+    <details class="card fam" id="shareBox" data-pane="family">
       <summary>🔗 שיתוף עם המשפחה</summary>
       ${sync.conf ? `
         <p class="sync-status">${syncStatusText()}</p>
@@ -1107,7 +1109,7 @@
         </details>`}
     </details>
 
-    <details class="card fam" id="cfgBox">
+    <details class="card fam" id="cfgBox" data-pane="settings">
       <summary>${sync.conf ? '⚙️ הגדרות המשפחה והדוד' : '⚙️ הגדרות הדוד'}</summary>
       ${sync.conf ? '<div class="home-loc"><div class="k">📍 מיקום הבית – משותף לכל המשפחה</div><div id="locSlot"></div></div>' : ''}
       <div class="grid-inputs">
@@ -1151,9 +1153,11 @@
       if (v != null) el.open = v;
       el.addEventListener('toggle', () => store.set(key, el.open));
     });
+    if (window.HWM && HWM.applyTab) HWM.applyTab();
   }
 
   // Show exactly five journal rows; the rest scroll inside the box (rows wrap on narrow screens)
+  document.addEventListener('hwm:tab', fitJournal); // rows have no size while their tab is hidden
   function fitJournal() {
     const box = $('journal');
     if (!box) return;
@@ -1274,8 +1278,9 @@
     } else if (b.dataset.delBoil) {
       commit([{ op: 'delBoiler', id: b.dataset.delBoil }]);
     } else if (b.id === 'openShare') {
+      HWM.showTab('family');
       $('shareBox').open = true;
-      $('shareBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      $('shareBox').scrollIntoView({ block: 'start' });
     } else if (b.id === 'createFam') {
       b.disabled = true; b.textContent = 'יוצר יומן…';
       createFamily($('famName').value).then(ok => {

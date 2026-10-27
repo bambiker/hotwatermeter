@@ -87,16 +87,23 @@
   #locHome .loc:not(.asking):not(.editing) > :not(.place):not(#locEdit) { display: none; }
   #locHome .loc:not(.asking):not(.editing) #locEdit { display: inline; }
   .loc .ask-only { display: none; }
-  /* first visit: one big question, one big button */
+  /* first visit: what this is, then just the town – no permission prompt unless they choose it */
   .loc.asking { flex-direction: column; align-items: stretch; gap: 12px; padding: 24px 20px; border-radius: 22px; }
   .loc.asking .place:empty { display: none; }
-  .loc.asking .ask-only { display: block; margin: 0; text-align: center; }
-  .loc.asking #geo { min-height: 54px; border-radius: 16px; background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 700; font-size: 1.05rem; }
-  .loc.asking .loc-q input { flex: 1; min-height: 48px; border-radius: 14px; }
-  .loc.asking .loc-q button { min-height: 48px; border-radius: 14px; }
+  .loc.asking .ask-only { display: block; margin: 0; }
+  .loc.asking .loc-q input { flex: 1; min-height: 50px; border-radius: 14px; font-size: 1.05rem; }
+  .loc.asking .loc-q button { min-height: 50px; border-radius: 14px; padding: 0 18px; background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 700; }
+  .loc.asking #results button { min-height: 46px; border-radius: 12px; padding: 8px 14px; }
+  .loc.asking #geo { min-height: 46px; border-radius: 14px; border-color: var(--accent); color: var(--accent); font-weight: 600; }
   .loc-ask { flex-basis: 100%; }
   .loc-ask h2 { font-size: 1.8rem; line-height: 1.15; font-weight: 800; margin: 0 0 8px; }
   .loc-ask p { margin: 0; color: var(--ink-2); font-size: 1.05rem; }
+  .how { list-style: none; counter-reset: how; margin: 14px 0 4px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .how li { counter-increment: how; display: flex; gap: 10px; align-items: center; }
+  .how li::before { content: counter(how); flex: none; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: .9rem; color: var(--mid); background: color-mix(in srgb, var(--sun) 18%, var(--surface)); }
+  .loc-ask label { display: block; margin-top: 14px; font-weight: 700; color: var(--ink); }
+  .loc .or { text-align: center; }
   #locSlot .loc { border: none; padding: 0; margin: 8px 0 0; background: none; }
   .home-loc { margin: 12px 0 4px; }
   .home-loc .k { color: var(--ink-2); font-size: .9rem; font-weight: 600; }
@@ -275,6 +282,19 @@
   .big-btn { min-height: 52px; border-radius: 26px; font-weight: 700; }
   .big-btn.dark { background: var(--ink); border-color: var(--ink); color: var(--bg); }
 
+  /* ---------- Bottom navigation: today / journal / family / settings ---------- */
+  .tabs { position: fixed; inset-inline: 0; bottom: 0; z-index: 11; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    background: var(--surface); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+  .tabs button { border: none; border-radius: 0; background: none; min-height: 60px; padding: 4px 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 2px; font-size: .8rem; color: var(--ink-2); }
+  .tabs button[aria-current="page"] { color: var(--accent); font-weight: 700; }
+  body.has-tabs { padding-bottom: 150px; }
+  body.has-tabs .actions { bottom: calc(60px + env(safe-area-inset-bottom)); padding-bottom: 10px; }
+  body[data-tab="today"] [data-pane]:not([data-pane="today"]),
+  body[data-tab="log"] [data-pane]:not([data-pane="log"]),
+  body[data-tab="family"] [data-pane]:not([data-pane="family"]),
+  body[data-tab="settings"] [data-pane]:not([data-pane="settings"]) { display: none !important; }
+
   footer { color: var(--ink-3); font-size: .8rem; margin-top: 24px; }
   footer a { color: var(--accent); }
 </style>
@@ -296,36 +316,45 @@
 }
 </script>
 </head>
-<body>
+<body data-tab="today">
 <main>
   <h1><img src="logo.svg" alt="" class="logo">מד מים חמים<button type="button" id="install" class="install" hidden>📲 התקנה</button></h1>
   <div id="installHelp" class="card install-help" hidden></div>
-  <p class="sub">האתר בודק כמה שמש הייתה היום, ומכך מסיק לכמה אנשים יספיק דוד השמש.<br>ככל שתשתמשו באתר יותר, הוא יכיר אתכם יותר וידייק את התחזית שלו.<br><a href="faq.html">שאלות ותשובות ❓</a></p>
+  <p class="sub" data-pane="today">האתר בודק כמה שמש הייתה היום, ומכך מסיק לכמה אנשים יספיק דוד השמש.<br>ככל שתשתמשו באתר יותר, הוא יכיר אתכם יותר וידייק את התחזית שלו.<br><a href="faq.html">שאלות ותשובות ❓</a></p>
 
-  <p id="famPlace" class="note" hidden></p>
+  <p id="famPlace" class="note" data-pane="today" hidden></p>
 
-  <div id="locHome"><div class="card loc" id="locCard">
-    <div class="loc-ask" id="locAsk" hidden><h2>יהיו מים חמים הערב?</h2><p>נבדוק כמה שמש יש אצלכם היום, ונגיד לכמה מקלחות יספיק דוד השמש.</p></div>
+  <div id="locHome" data-pane="today"><div class="card loc" id="locCard">
+    <div class="loc-ask" id="locAsk" hidden>
+      <h2>יהיו מים חמים הערב?</h2>
+      <p>האתר בודק כמה שמש יש היום אצלכם, ואומר לכמה מקלחות חמות יספיק דוד השמש – ומתי כדאי להדליק דוד.</p>
+      <ol class="how">
+        <li>בוחרים יישוב</li>
+        <li>רואים לכמה מקלחות יספיק הערב</li>
+        <li>אחרי מקלחת מסמנים איך היו המים – והתחזית מתדייקת</li>
+      </ol>
+      <label for="q">באיזה יישוב הבית?</label>
+    </div>
     <span class="place" id="place">…</span>
     <button id="locEdit" type="button" class="linkish">שינוי מיקום</button>
-    <button id="geo" type="button">📍 המיקום שלי</button>
-    <p class="note ask-only">או חפשו יישוב:</p>
     <div class="loc-q">
-      <input id="q" type="search" placeholder="חיפוש עיר…" aria-label="חיפוש עיר">
-      <button id="search" type="button">חפש</button>
+      <input id="q" type="search" placeholder="למשל: באר שבע" aria-label="חיפוש יישוב" autocomplete="off">
+      <button id="search" type="button">חיפוש</button>
     </div>
     <div id="results" style="flex-basis:100%"></div>
-    <p class="note ask-only">בלי הרשמה ובלי פרטים אישיים</p>
+    <p class="note ask-only or">או</p>
+    <button id="geo" type="button">📍 לפי המיקום של הטלפון</button>
+    <p class="note ask-only">הטלפון ישאל אם לאשר. המיקום נשמר רק אצלכם במכשיר ומשמש רק לתחזית השמש. בלי הרשמה ובלי פרטים אישיים.</p>
   </div></div>
 
   <noscript><p class="card">האתר צריך JavaScript כדי לחשב את מצב הדוד לפי מזג האוויר.</p></noscript>
   <div id="status" class="note"></div>
-  <div id="summary"></div>
-  <div id="indexCard"></div>
-  <div id="tips"></div>
-  <div id="welcome"></div>
+  <div id="summary" data-pane="today"></div>
+  <div id="indexCard" data-pane="today"></div>
+  <div id="tips" data-pane="today"></div>
+  <div id="welcome" data-pane="today"></div>
 
-  <details class="more" id="moreBox" hidden>
+  <details class="more" id="moreBox" data-pane="today" hidden>
     <summary>📊 פרטים וגרפים – השמש והדוד לאורך היום</summary>
     <div class="days" id="days"></div>
     <div class="card compare" id="compare" hidden></div>
@@ -334,7 +363,7 @@
 
   <div id="family"></div>
 
-  <section class="about">
+  <section class="about" data-pane="today">
     <h2>מחשבון דוד שמש: כמה מים חמים יהיו הערב?</h2>
     <p>מד מים חמים בודק את תחזית השמש והעננים במקום שלכם (נתוני <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>), ומעריך כמה הדוד מתחמם היום ולכמה מקלחות חמות הוא יספיק הערב – בלי להדליק את הדוד החשמלי.</p>
     <ul>
@@ -354,6 +383,12 @@
   </footer>
 </main>
 <div class="actions" id="actions" hidden></div>
+<nav class="tabs" id="tabs" aria-label="ניווט ראשי" hidden>
+  <button type="button" data-tab="today" aria-current="page"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5"/></svg>היום</button>
+  <button type="button" data-tab="log"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>יומן</button>
+  <button type="button" data-tab="family"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14a5 5 0 0 1 4.5 5"/></svg>משפחה</button>
+  <button type="button" data-tab="settings"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>הגדרות</button>
+</nav>
 <div class="sheet-wrap" id="sheet" hidden></div>
 
 <script>
@@ -656,9 +691,31 @@
     $('place').textContent = '';
   }
 
+  // ---------- Bottom navigation (each tab is a #hash, so the phone's back button returns to "today") ----------
+  const TABS = ['today', 'log', 'family', 'settings'];
+  // a tab's collapsible cards open by themselves – they are the whole page there
+  function applyTab() {
+    const t = document.body.dataset.tab;
+    if (t !== 'today') document.querySelectorAll(`details[data-pane="${t}"]`).forEach(d => { d.open = true; });
+  }
+  function showTab(tab, push) {
+    if (!TABS.includes(tab)) tab = 'today';
+    const changed = document.body.dataset.tab !== tab;
+    document.body.dataset.tab = tab;
+    document.querySelectorAll('#tabs [data-tab]').forEach(b => {
+      if (b.dataset.tab === tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
+    applyTab();
+    if (push && changed) history.pushState(null, '', tab === 'today' ? location.pathname + location.search : '#' + tab);
+    if (changed) { scrollTo(0, 0); document.dispatchEvent(new CustomEvent('hwm:tab', { detail: tab })); }
+  }
+  $('tabs').addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (b) showTab(b.dataset.tab, true); });
+  addEventListener('popstate', () => showTab(location.hash.slice(1), false));
+  if (TABS.includes(location.hash.slice(1))) showTab(location.hash.slice(1), false);
+
   window.HWM = {
     get loc() { return loc; }, setLoc: (l) => setLoc(l, true), askLoc,
-    reload: () => load()
+    reload: () => load(), showTab: (t) => showTab(t, true), applyTab
   };
 
   // onFail runs when location is unavailable (denied, unsupported, timeout)
@@ -676,13 +733,16 @@
     $('status').textContent = msg + (loc ? '' : ' – אפשר לחפש עיר.');
   }));
 
+  let searchSeq = 0; // searching as you type: only the latest answer counts
   async function search() {
     const q = $('q').value.trim();
     if (!q) return;
+    const seq = ++searchSeq;
     $('results').textContent = 'מחפש…';
     try {
       const r = await fetch('https://geocoding-api.open-meteo.com/v1/search?count=6&language=he&name=' + encodeURIComponent(q));
       const j = await r.json();
+      if (seq !== searchSeq) return;
       const list = j.results || [];
       $('results').innerHTML = list.length ? '' : 'לא נמצאו תוצאות';
       list.forEach(c => {
@@ -692,11 +752,16 @@
         b.onclick = () => setLoc({ name: c.name, lat: c.latitude, lon: c.longitude });
         $('results').appendChild(b);
       });
-    } catch (e) { $('results').textContent = 'שגיאה בחיפוש: ' + e.message; }
+    } catch (e) { if (seq === searchSeq) $('results').textContent = 'שגיאה בחיפוש: ' + e.message; }
   }
   $('search').addEventListener('click', search);
   $('locEdit').addEventListener('click', () => { $('locCard').classList.add('editing'); $('q').focus(); });
   $('q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+  let typingTimer;
+  $('q').addEventListener('input', () => {
+    clearTimeout(typingTimer);
+    if ($('q').value.trim().length >= 2) typingTimer = setTimeout(search, 450);
+  });
 
   if (inFamily()) {
     if (saved) load(); // family.js then applies the family's home, or asks for one
