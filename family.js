@@ -1230,17 +1230,25 @@
   }
 
   // ---------- Deleting from the journal: two taps, then a few seconds to undo ----------
-  // The first tap only turns ✕ into "מחיקה?"; it goes back by itself if the second tap doesn't come.
-  function armed(b) {
+  // The first tap only turns ✕ into "מחיקה?" and warns what deleting a real entry does to the learning;
+  // it goes back by itself if the second tap doesn't come.
+  const ARM_MS = 8000;
+  function armed(b, warning) {
     if (b.classList.contains('arm')) return true;
     b.classList.add('arm');
     b.textContent = 'מחיקה?';
     b.setAttribute('aria-label', 'לחיצה נוספת תמחק');
-    setTimeout(() => { if (b.isConnected) { b.classList.remove('arm'); b.textContent = '✕'; b.setAttribute('aria-label', 'מחיקה'); } }, 4000);
+    showToast('⚠️ ' + warning, null, ARM_MS);
+    setTimeout(() => {
+      if (!b.isConnected || !b.classList.contains('arm')) return;
+      b.classList.remove('arm'); b.textContent = '✕'; b.setAttribute('aria-label', 'מחיקה');
+    }, ARM_MS);
     return false;
   }
+  const undoable = (text, undo) => showToast(text, undo, 10000);
   let toast = null;
-  function undoable(text, undo) {
+  // action: an "undo" callback for the button, or null for a message only
+  function showToast(text, action, ms) {
     if (!toast) {
       toast = document.createElement('div');
       toast.className = 'toast';
@@ -1248,10 +1256,10 @@
       document.body.appendChild(toast);
     }
     clearTimeout(toast.timer);
-    toast.innerHTML = `<span>${esc(text)}</span><button type="button">ביטול</button>`;
+    toast.innerHTML = `<span>${esc(text)}</span>${action ? '<button type="button">ביטול</button>' : ''}`;
     toast.hidden = false;
-    toast.querySelector('button').onclick = () => { toast.hidden = true; undo(); };
-    toast.timer = setTimeout(() => { toast.hidden = true; }, 10000);
+    if (action) toast.querySelector('button').onclick = () => { toast.hidden = true; action(); };
+    toast.timer = setTimeout(() => { toast.hidden = true; }, ms);
   }
 
   // ---------- Events (delegated; the section is re-rendered on every change) ----------
@@ -1266,7 +1274,7 @@
       commit([{ op: 'member', m: { id: uid(), name, liters: null, n: 0, skip: {} } }]);
       $('newName').focus();
     } else if (b.dataset.delLog) {
-      if (!armed(b)) return;
+      if (!armed(b, 'מוחקים רק רישום שגוי. אם המקלחת באמת הייתה – מחיקה שלה תפגע בלמידה של הדוד והמשפחה. כדי למחוק, לוחצים שוב על "מחיקה?".')) return;
       const l = fam.logs.find(x => x.id === b.dataset.delLog);
       fam.logs = fam.logs.filter(x => x !== l);
       commit([{ op: 'delLog', id: l.id }, ...fit()]);
@@ -1304,7 +1312,7 @@
       if (!v || !(min > 0)) return;
       commit([{ op: 'boiler', b: { id: uid(), t: Date.parse(v + ':00Z') - wx.off, min: Math.min(600, Math.round(min)) } }]);
     } else if (b.dataset.delBoil) {
-      if (!armed(b)) return;
+      if (!armed(b, 'מוחקים רק רישום שגוי. אם הדוד באמת הודלק – מחיקה תפגע בלמידה של קצב החימום, וההמלצות כמה דקות להדליק ייפגעו. כדי למחוק, לוחצים שוב על "מחיקה?".')) return;
       const r = fam.boilers.find(x => x.id === b.dataset.delBoil);
       commit([{ op: 'delBoiler', id: r.id }]);
       undoable('הדלקת הדוד נמחקה מהיומן', () => commit([{ op: 'boiler', b: r }]));
