@@ -353,7 +353,12 @@
           T = applyLog(T, l);
           pts.push({ t: l.t, T, log: l });
         }
-        if (b > stopAt) return { T, pts, gains: gainsByDate(), obs };
+        if (b > stopAt) {
+          // the part of this step up to stopAt, so the tank moves minute by minute (a boiler switched on
+          // 5 minutes ago shows already, not only once its 15-minute step is over)
+          if (stopAt > a) T = step(T, h, a, stopAt, spans, solarGain(T, h, (stopAt - a) / HOUR));
+          return { T, pts, gains: gainsByDate(), obs };
+        }
         const sun = solarGain(T, h, (b - a) / HOUR);
         const g = byDay[Math.floor((a + wx.off) / DAY)] ||= { total: 0, soFar: 0 };
         g.total += sun;
@@ -987,6 +992,13 @@
         <div>${head}</div>
       </div>
       ${sunLeft >= 1 ? `<p class="note">☀️ הדוד עוד יתחמם מהשמש בכ-${ltr('+' + Math.round(sunLeft) + '°')} עד הערב</p>` : ''}
+      ${(() => {
+        const on = activeRun(now);
+        if (!on) return '';
+        const perHour = cfg.heaterKw * cfg.heaterEff * 3600 / (cfg.liters * CP);
+        const stat = Math.min(cfg.heaterMax, cfg.tankMax);
+        return `<p class="advice warn">🔥 הדוד דלוק מאז ${ltr(hhmm(on.t))}${on.min != null ? ` (עד ${ltr(hhmm(on.t + on.min * 60000))})` : ''} – מחמם בכ-${ltr(fmt(perHour, 0) + '°')} לשעה${cur >= stat - 0.5 ? `, והגיע לטרמוסטט (${ltr(stat + '°')})` : ''}.</p>`;
+      })()}
       ${body}
       ${learnableLogs().length < 3 ? '<p class="note">זו הערכה כללית לדוד ממוצע – עוד לא מכירים את הבית שלכם.</p>' : ''}
       <div class="hero-strip"><span>${strip}</span><a href="#moreBox" data-more>פרטים וגרפים ‹</a></div>
@@ -1721,7 +1733,13 @@
   if (window.HWM && HWM.weather) onWeather(HWM.weather);
 
   // keep "now" fresh while the page stays open
-  setInterval(() => { if (wx && !typing()) render(); }, 5 * 60000);
+  // every minute while the boiler is on (the tank is warming), every 5 otherwise
+  let lastTick = 0;
+  setInterval(() => {
+    const now = Date.now();
+    if (!wx || typing() || sheet.kind) return;
+    if (now - lastTick >= 5 * 60000 || activeRun(now)) { lastTick = now; render(); }
+  }, 60000);
 
   // shared log: join via link, pull on start, every minute and when the app comes back to the foreground
   const joined = readJoinLink();
