@@ -952,6 +952,9 @@
     if (!sh.tonight) { box.innerHTML = ''; return; }
     const when = sh.isNow ? 'עכשיו' : 'הערב';
     const tn = sh.tonight;
+    // with the boiler on, the count already includes its heat – "without the boiler" would be wrong
+    const on = activeRun(now);
+    const cond = !on ? 'בלי להדליק דוד' : sh.isNow ? 'עם מה שהדוד כבר חימם' : 'עם הדוד שדלוק עכשיו';
     let head, body = '';
     if (tn.total != null) {
       const he = heatEach(sh.t, sh.away, sh.slot);
@@ -963,7 +966,7 @@
         head = `<div class="k">${when} (${ltr(hhmm(sh.t))})</div>
           <div class="big">${sh.done.size ? 'כולם כבר התקלחו' : 'אף אחד לא מתקלח'}</div>
           <p class="note">${n ? `בדוד נשאר מספיק לעוד ~${ltr(n)} ${n === 1 ? 'מקלחת' : 'מקלחות'} בלי דוד` : `למקלחת נוספת צריך להדליק דוד כ-${ltr(mins)} דקות`}</p>`;
-      } else head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) בלי להדליק דוד יספיק</div>
+      } else head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) ${cond} יספיק</div>
         <div class="big">${all ? (tn.total === 1 ? 'מספיק' : 'לכולם') : tn.ok ? `ל־${ltr(tn.ok)} מתוך ${ltr(tn.total)}` : 'לאף אחד'}</div>`;
       const row = new Map(he.rows.map(r => [r.m.id, r]));
       const done = sh.done;
@@ -971,16 +974,17 @@
         const r = row.get(m.id);
         if (done.has(m.id)) return `<li class="ok"><button type="button" data-away="${m.id}" aria-pressed="false" disabled><span class="dot">${CHECK}</span>${esc(m.name)}<span class="st">כבר התקלח/ה</span></button></li>`;
         if (!r) return `<li class="away"><button type="button" data-away="${m.id}" aria-pressed="true"><span class="dot"></span>${esc(m.name)}<span class="st">${sh.isNow ? 'לא עכשיו' : 'לא הערב'}</span></button></li>`;
-        const st = !r.min ? 'בלי דוד' : `🔌 ${ltr(r.min)} דק׳${r.capped ? ' (גם אז לא עד הסוף)' : ''}`;
+        const st = !r.min ? (on ? 'מספיק כבר' : 'בלי דוד') : `${on ? 'עוד' : '🔌'} ${ltr(r.min)} דק׳${r.capped ? ' (גם אז לא עד הסוף)' : ''}`;
         return `<li class="${r.min ? 'heat' : 'ok'}"><button type="button" data-away="${m.id}" aria-pressed="false"><span class="dot">${r.min ? '' : CHECK}</span>${esc(m.name)}<span class="st">${st}</span></button></li>`;
       };
       body = `<ul class="people">${slotPeople(sh.slot).map(item).join('')}</ul>
-        ${he.total ? `<p class="advice warn">🔌 כל אחד מדליק את הדוד לפני המקלחת שלו, לפי הדקות שליד השם – סה״כ כ-${ltr(he.total)} דקות.${why('heat-each-or-all')}</p>` : ''}
-        ${(() => { const th = heatThrough(he); return th && he.total - th.lead >= 5 ? `<p class="note">אפשר גם להדליק כ-${ltr(th.lead)} דקות לפני המקלחת הראשונה ולהשאיר דלוק עד שכולם מתקלחים ברצף: הדוד ממשיך לחמם בזמן המקלחות, אז כולם מסיימים כ-${ltr(he.total - th.lead)} דקות מוקדם יותר. החשמל כמעט זהה (כ-${ltr(th.total)} דקות דוד) – אבל מים חמים "שלא נגמרים" נוטים להאריך מקלחות.</p>` : ''; })()}
+        ${on ? (tn.total ? adviceHtml(he.p, true) : '')
+          : he.total ? `<p class="advice warn">🔌 כל אחד מדליק את הדוד לפני המקלחת שלו, לפי הדקות שליד השם – סה״כ כ-${ltr(he.total)} דקות.${why('heat-each-or-all')}</p>` : ''}
+        ${on ? '' : (() => { const th = heatThrough(he); return th && he.total - th.lead >= 5 ? `<p class="note">אפשר גם להדליק כ-${ltr(th.lead)} דקות לפני המקלחת הראשונה ולהשאיר דלוק עד שכולם מתקלחים ברצף: הדוד ממשיך לחמם בזמן המקלחות, אז כולם מסיימים כ-${ltr(he.total - th.lead)} דקות מוקדם יותר. החשמל כמעט זהה (כ-${ltr(th.total)} דקות דוד) – אבל מים חמים "שלא נגמרים" נוטים להאריך מקלחות.</p>` : ''; })()}
         <p class="note">לחיצה על שם: לא מתקלח/ת ${sh.isNow ? 'עכשיו' : 'הערב'} (לא בבית, התקלח/ה בבריכה…) – והחישוב מתעדכן.</p>`;
     } else {
       const n = tn.n;
-      head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) בלי להדליק דוד ${n ? 'יספיק בערך ל־' : ''}</div>
+      head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) ${cond} ${n ? 'יספיק בערך ל־' : ''}</div>
         <div class="big">${n === 0 ? 'אין מים חמים' : n === 1 ? 'מקלחת אחת' : `${ltr(n)} מקלחות`}</div>
         <div class="icons">${Array(Math.min(n, 8)).fill(SHOWER).join('')}<span class="off">${SHOWER}</span></div>`;
     }
