@@ -246,6 +246,10 @@
   .know .bar, .learned .bar { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
   .know .bar > i, .learned .bar > i { background: var(--accent); }
   .know .note { margin: 0; }
+  .money-row { display: flex; flex-wrap: wrap; gap: 8px 28px; }
+  .money-row div { display: flex; flex-direction: column; }
+  .money-row b { font-size: 1.8rem; font-weight: 800; line-height: 1.1; color: var(--good); font-variant-numeric: tabular-nums; }
+  .money-row span { font-size: .85rem; color: var(--ink-2); }
   details.more { margin: 4px 0 16px; }
   details.more > summary { cursor: pointer; list-style: none; font-weight: 700; color: var(--accent); padding: 10px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
   details.more > summary::-webkit-details-marker { display: none; }
@@ -805,7 +809,7 @@
   })();
 </script>
 <!-- ?v= changes with each release, so a phone never pairs a new page with an old cached script -->
-<script src="config.js?v=20261027c"></script>
-<script src="family.js?v=20261027c"></script>
+<script src="config.js?v=20261027d"></script>
+<script src="family.js?v=20261027d"></script>
 </body>
 </html>
