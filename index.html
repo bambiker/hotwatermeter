@@ -218,13 +218,18 @@
   .hero .note { margin: 0; }
   .hero .advice { margin: 0; }
   .people { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
-  .people li { display: flex; align-items: center; gap: 8px; background: var(--bg); border-radius: 12px; padding: 8px 10px; font-weight: 500; }
+  .people li { background: var(--bg); border-radius: 12px; }
+  .people button { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: none; border-radius: 12px;
+    background: none; color: inherit; font-weight: 500; text-align: start; }
+  .people button:disabled { opacity: 1; cursor: default; }
   .people .dot { flex: none; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-sizing: border-box; }
   .people .ok .dot { background: var(--hot); color: var(--surface); }
-  .people .partial .dot { border: 2px solid var(--mid); }
-  .people .cold .dot { border: 2px solid var(--accent); }
-  .people .partial, .people .cold { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
-  .people .st { margin-inline-start: auto; font-size: .78rem; color: var(--ink-2); }
+  .people .heat .dot { border: 2px solid var(--accent); }
+  .people .heat { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+  .people .away { opacity: .6; }
+  .people .away .dot { border: 2px dashed var(--ink-3); }
+  .people .st { margin-inline-start: auto; font-size: .8rem; color: var(--ink-2); white-space: nowrap; }
+  .people .heat .st { color: var(--accent); font-weight: 700; }
   .hero-strip { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: .92rem; color: var(--ink-2); }
   .hero-strip a { margin-inline-start: auto; font-weight: 700; color: var(--accent); text-decoration: none; }
   .idx { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; padding: 12px 16px; border-radius: 18px; }
@@ -303,6 +308,12 @@
   body[data-tab="log"] [data-pane]:not([data-pane="log"]),
   body[data-tab="family"] [data-pane]:not([data-pane="family"]),
   body[data-tab="settings"] [data-pane]:not([data-pane="settings"]) { display: none !important; }
+
+  .learned-box { margin: 14px 0; }
+  .learned-box h3 { font-size: 1rem; margin: 0 0 4px; }
+  .months td { font-size: .9rem; white-space: nowrap; }
+  .mbar { display: inline-block; width: 70px; height: 8px; border-radius: 4px; vertical-align: middle; background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+  .mbar > i { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
 
   footer { color: var(--ink-3); font-size: .8rem; margin-top: 24px; }
   footer a { color: var(--accent); }
@@ -811,7 +822,7 @@
   })();
 </script>
 <!-- ?v= changes with each release, so a phone never pairs a new page with an old cached script -->
-<script src="config.js?v=20261028b"></script>
-<script src="family.js?v=20261028b"></script>
+<script src="config.js?v=20261028c"></script>
+<script src="family.js?v=20261028c"></script>
 </body>
 </html>
