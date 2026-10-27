@@ -1229,6 +1229,31 @@
     svg.addEventListener('pointerleave', () => { tip.style.display = 'none'; cross.setAttribute('visibility', 'hidden'); });
   }
 
+  // ---------- Deleting from the journal: two taps, then a few seconds to undo ----------
+  // The first tap only turns ✕ into "מחיקה?"; it goes back by itself if the second tap doesn't come.
+  function armed(b) {
+    if (b.classList.contains('arm')) return true;
+    b.classList.add('arm');
+    b.textContent = 'מחיקה?';
+    b.setAttribute('aria-label', 'לחיצה נוספת תמחק');
+    setTimeout(() => { if (b.isConnected) { b.classList.remove('arm'); b.textContent = '✕'; b.setAttribute('aria-label', 'מחיקה'); } }, 4000);
+    return false;
+  }
+  let toast = null;
+  function undoable(text, undo) {
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.className = 'toast';
+      toast.setAttribute('role', 'status');
+      document.body.appendChild(toast);
+    }
+    clearTimeout(toast.timer);
+    toast.innerHTML = `<span>${esc(text)}</span><button type="button">ביטול</button>`;
+    toast.hidden = false;
+    toast.querySelector('button').onclick = () => { toast.hidden = true; undo(); };
+    toast.timer = setTimeout(() => { toast.hidden = true; }, 10000);
+  }
+
   // ---------- Events (delegated; the section is re-rendered on every change) ----------
   const uid = () => 'x' + Math.random().toString(36).slice(2, 10); // letter prefix keeps Sheets from reading it as a number
 
@@ -1241,8 +1266,11 @@
       commit([{ op: 'member', m: { id: uid(), name, liters: null, n: 0, skip: {} } }]);
       $('newName').focus();
     } else if (b.dataset.delLog) {
-      fam.logs = fam.logs.filter(l => l.id !== b.dataset.delLog);
-      commit([{ op: 'delLog', id: b.dataset.delLog }, ...fit()]);
+      if (!armed(b)) return;
+      const l = fam.logs.find(x => x.id === b.dataset.delLog);
+      fam.logs = fam.logs.filter(x => x !== l);
+      commit([{ op: 'delLog', id: l.id }, ...fit()]);
+      undoable(`המקלחת של ${member(l.member)?.name ?? '?'} נמחקה מהיומן`, () => { fam.logs.push(l); commit([{ op: 'log', l }, ...fit()]); });
     } else if (b.dataset.delM) {
       const m = member(b.dataset.delM);
       if (!confirm(`למחוק את ${m.name}?`)) return;
@@ -1276,7 +1304,10 @@
       if (!v || !(min > 0)) return;
       commit([{ op: 'boiler', b: { id: uid(), t: Date.parse(v + ':00Z') - wx.off, min: Math.min(600, Math.round(min)) } }]);
     } else if (b.dataset.delBoil) {
-      commit([{ op: 'delBoiler', id: b.dataset.delBoil }]);
+      if (!armed(b)) return;
+      const r = fam.boilers.find(x => x.id === b.dataset.delBoil);
+      commit([{ op: 'delBoiler', id: r.id }]);
+      undoable('הדלקת הדוד נמחקה מהיומן', () => commit([{ op: 'boiler', b: r }]));
     } else if (b.id === 'openShare') {
       HWM.showTab('family');
       $('shareBox').open = true;
