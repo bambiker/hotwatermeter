@@ -543,6 +543,9 @@
 
   function render(data) {
     renderDays(data);
+    // the navigation belongs to the page, so it shows even before family.js has run
+    $('tabs').hidden = false;
+    document.body.classList.add('has-tabs');
     // kept so family.js can pick it up even if it loads after this fires
     window.HWM.weather = data;
     document.dispatchEvent(new CustomEvent('hwm:weather', { detail: data }));
@@ -796,7 +799,8 @@
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   })();
 </script>
-<script src="config.js"></script>
-<script src="family.js"></script>
+<!-- ?v= changes with each release, so a phone never pairs a new page with an old cached script -->
+<script src="config.js?v=20261027"></script>
+<script src="family.js?v=20261027"></script>
 </body>
 </html>
