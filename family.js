@@ -656,6 +656,34 @@
     return { p, rows, total: rows.reduce((s, r) => s + r.min, 0) };
   }
 
+  // The other way: switch the boiler on once before the first shower and leave it on until the last one.
+  // It keeps heating during each shower for the next ones, so the wait before is shorter – the electricity
+  // is about the same. Showers back to back, each as long as its water at ~8 liters a minute.
+  // Returns { lead: minutes before the first shower, total: minutes on }, or null if it can't make it.
+  const FLOW = 8; // liters a minute of shower-temperature water
+  function heatThrough(he) {
+    const rows = he.rows;
+    if (rows.filter(r => r.min).length < 2) return null; // worth it only when several need the boiler
+    const stat = Math.min(cfg.heaterMax, cfg.tankMax);
+    const perMin = cfg.heaterKw * cfg.heaterEff * 60 / (cfg.liters * CP);
+    const showerMin = rows.reduce((s, r) => s + need(r.m) / FLOW, 0);
+    const ok = (lead) => {
+      let T = he.p.T0 < stat ? Math.min(stat, he.p.T0 + lead * perMin) : he.p.T0;
+      for (const r of rows) {
+        const gain = need(r.m) / FLOW * perMin, d = drawOf(r.m);
+        const end = Math.min(Math.max(T, stat), T + gain) - d; // the element stops at the thermostat
+        if (end < tsh() - 0.05) return false;
+        T = Math.max(tin(), end);
+      }
+      return true;
+    };
+    if (!ok(600)) return null;
+    let lo = 0, hi = 600;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (ok(mid)) hi = mid; else lo = mid; }
+    const lead = ok(0) ? 0 : hi;
+    return { lead, total: Math.round(lead + showerMin) };
+  }
+
   function showersTonight(now) {
     const t = tonightAt(now);
     const away = awayTonight(now);
@@ -923,6 +951,7 @@
       };
       body = `<ul class="people">${eveningPeople().map(item).join('')}</ul>
         ${he.total ? `<p class="advice warn">🔌 כל אחד מדליק את הדוד לפני המקלחת שלו, לפי הדקות שליד השם – סה״כ כ-${ltr(he.total)} דקות.${why('heat-each-or-all')}</p>` : ''}
+        ${(() => { const th = heatThrough(he); return th && he.total - th.lead >= 5 ? `<p class="note">אפשר גם להדליק כ-${ltr(th.lead)} דקות לפני המקלחת הראשונה ולהשאיר דלוק עד שכולם מתקלחים ברצף: הדוד ממשיך לחמם בזמן המקלחות, אז כולם מסיימים כ-${ltr(he.total - th.lead)} דקות מוקדם יותר. החשמל כמעט זהה (כ-${ltr(th.total)} דקות דוד) – אבל מים חמים "שלא נגמרים" נוטים להאריך מקלחות.</p>` : ''; })()}
         <p class="note">לחיצה על שם: לא מתקלח/ת הערב (לא בבית, התקלח/ה בבריכה…) – והחישוב מתעדכן.</p>`;
     } else {
       const n = tn.n;
