@@ -253,7 +253,6 @@
   }
 
   let wx = null; // { off, hours: [{ start, end, ghi, ta }] }
-  let learnNote = null; // { text, at } – survives re-renders for a few minutes
 
   // ---------- Model ----------
   const member = (id) => fam.members.find(m => m.id === id);
@@ -489,8 +488,9 @@
     const sh = cfg.heaterEff / before.heaterEff;
     if (sh > 1.08) parts.push('הדוד החשמלי מחמם מהר יותר ממה שחשבנו.');
     else if (sh < 0.93) parts.push('הדוד החשמלי מחמם לאט יותר ממה שחשבנו.');
-    return parts.length ? parts.join(' ') : 'תואם את מה שכבר למדנו.';
+    return parts.length ? parts.join(' ') : SAME;
   }
+  const SAME = 'תואם את מה שכבר למדנו.';
 
   // ---------- Time helpers (location-local time) ----------
   const localStr = (t) => new Date(t + wx.off).toISOString();
@@ -543,16 +543,9 @@
       if (p.total) return { ok: p.rows.filter(r => r.st === 'ok').length, total: p.total };
       return { n: anonShowers(p.T0) }; // nobody listed: showers of the default (or learned 'someone') size
     };
-    const tonight = at(t), yday = at(t - DAY);
+    const tonight = at(t), yday = at(t - DAY), tmrw = at(t + DAY);
     const say = (x) => x.total != null ? `${ltr(x.ok)} מתוך ${ltr(x.total)}` : `~${ltr(x.n)} מקלחות`;
-    const pct = (x) => x.total != null ? Math.round(x.ok / x.total * 100) : null;
-    const cls = !tonight ? '' : tonight.total != null ? (pct(tonight) === 100 ? 'good' : pct(tonight) > 0 ? 'mid' : 'bad') : '';
-    const html = !tonight ? '' : `<div class="showers">
-      <div class="k">🚿 ${dayStart(t) > dayStart(now) ? 'מחר בערב' : 'הערב'} (${ltr(hhmm(t))}) בלי להדליק דוד</div>
-      <div class="big2 ${cls}">${tonight.total != null ? `מספיק ל-${say(tonight)}` : say(tonight)}</div>
-      <div class="note">${yday ? `אתמול באותה שעה: ${say(yday)}` : ''} · מקלחת ב-${ltr(tsh() + '°')}, מים מהברז ${ltr(tin() + '°')}</div>
-    </div>`;
-    return { html, tonight, yday, t, say, cls };
+    return { tonight, yday, tmrw, t, say };
   }
 
   // ---------- When to shower: move someone to midday so the sun can make up for it ----------
@@ -610,7 +603,44 @@
     tip.moves.forEach(mv => { (byTime[mv.t] ||= []).push(esc(mv.m.name)); });
     const who = Object.entries(byTime).map(([t, names]) => `${names.join(' ו')} עד ${ltr(hhmm(+t))}`).join(', ו');
     const plural = tip.moves.length > 1 ? 'יתקלחו' : 'יתקלח/תתקלח';
-    return `<p class="tip-when">💡 אם ${who} ${plural} במהלך היום במקום בערב – ${tip.hot === tip.total ? 'יספיק לכולם' : `יספיק ל-${ltr(tip.hot)} מתוך ${ltr(tip.total)}`} בלי להדליק דוד (במקום ${ltr(tip.before)}). השמש תספיק לחמם את הדוד מחדש עד הערב.${why('best-time')}</p>`;
+    return `<div class="tip-card"><span aria-hidden="true">💡</span><p><b>טיפ:</b> אם ${who} ${plural} במהלך היום במקום בערב – ${tip.hot === tip.total ? 'יספיק לכולם' : `יספיק ל-${ltr(tip.hot)} מתוך ${ltr(tip.total)}`} בלי להדליק דוד (במקום ${ltr(tip.before)}). השמש תספיק לחמם את הדוד מחדש עד הערב.${why('best-time')}</p></div>`;
+  }
+
+  // ---------- How well we know this home (0–100%): grows with logged showers, and with each named person's ----------
+  const KNOW_PER_PERSON = 5;
+  function knowledge() {
+    const logs = learnableLogs();
+    const named = fam.members.filter(m => !isGeneric(m));
+    const nOf = (m) => logs.filter(l => l.member === m.id).length;
+    const overall = 1 - Math.exp(-logs.length / 10);
+    // without names everyone's showers look alike, so half of it can't be learned
+    const people = named.length
+      ? named.reduce((s, m) => s + Math.min(1, nOf(m) / KNOW_PER_PERSON), 0) / named.length
+      : Math.min(1, logs.length / KNOW_PER_PERSON) * 0.5;
+    const pct = Math.min(99, Math.round(100 * (0.5 * overall + 0.5 * people)));
+    const least = named.map(m => ({ m, n: nOf(m) })).filter(x => x.n < KNOW_PER_PERSON).sort((a, b) => a.n - b.n)[0];
+    const hint = !named.length ? 'הוסיפו את בני הבית (למטה), וכל אחד יילמד בנפרד'
+      : least ? (least.n ? `עוד ${ltr(KNOW_PER_PERSON - least.n)} מקלחות של ${esc(least.m.name)}, ונכיר גם אותן` : `עוד לא נרשמה מקלחת של ${esc(least.m.name)}`)
+      : 'כל מקלחת שנרשמת עוד מדייקת את התחזית';
+    return { pct, hint, n: logs.length, named: named.length };
+  }
+
+  // ---------- Small drawings ----------
+  const SHOWER = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 20V8a4 4 0 0 1 4-4h2a4 4 0 0 1 4 4"/><path d="M10 11h8"/><path d="M12 15v1M15 15v2M18 15v1M13.5 19v1M16.5 19v1"/></svg>';
+  const CHECK = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>';
+  // A thermometer for each answer: how much hot water was left at the end
+  const thermo = (color, level) => `<svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><circle cx="17" cy="17" r="16" style="fill:color-mix(in srgb, ${color} 16%, var(--surface))"/><rect x="14" y="6" width="6" height="17" rx="3" fill="none" stroke="${color}" stroke-width="2"/><circle cx="17" cy="25" r="4" fill="${color}"/>${level ? `<rect x="16" y="${23 - level}" width="2" height="${level}" fill="${color}"/>` : ''}</svg>`;
+  // The tank, filled and coloured by its temperature
+  function tankSvg(T) {
+    const f = Math.max(0.08, Math.min(1, (T - tin()) / (Math.max(cfg.heaterMax, 65) - tin())));
+    const col = T < tsh() ? 'var(--accent)' : T < tsh() + 10 ? 'var(--mid)' : 'var(--hot)';
+    return `<svg class="tank" viewBox="0 0 64 112" role="img" aria-label="הדוד עכשיו בערך ${Math.round(T)} מעלות">
+      <defs><clipPath id="tankClip"><rect x="8" y="4" width="48" height="104" rx="24"/></clipPath></defs>
+      <rect x="8" y="4" width="48" height="104" rx="24" fill="var(--bg)"/>
+      <rect x="8" y="${(4 + 104 * (1 - f)).toFixed(1)}" width="48" height="${(104 * f).toFixed(1)}" fill="${col}" clip-path="url(#tankClip)"/>
+      <rect x="8" y="4" width="48" height="104" rx="24" fill="none" stroke="var(--line)" stroke-width="2"/>
+      <text x="32" y="38" text-anchor="middle" font-size="17" font-weight="800" fill="var(--ink)" stroke="var(--surface)" stroke-width="3" paint-order="stroke">${Math.round(T)}°</text>
+    </svg>`;
   }
 
   // ---------- Rendering ----------
@@ -627,15 +657,19 @@
   // "why?" links from the advice to the matching answer in the Q&A page
   const why = (id) => ` <a class="why" href="faq.html#${id}">למה?</a>`;
 
-  function slotCard(title, t, slot, now) {
-    const p = plan(t, slot);
-    const status = !p.rows.length ? '' : p.rows.every(r => r.st === 'ok') ? 'ok' : p.rows.some(r => r.st === 'ok') ? 'partial' : 'cold';
-    const running = slot === 'now' && activeRun(now);
-    const advice = !p.rows.length ? `<p class="note">בערך ${ltr(anonShowers(p.T0))} מקלחות חמות ברצף</p>`
+  // What to do about the boiler for a slot's plan (running: the boiler is on right now)
+  function adviceHtml(p, running) {
+    return !p.rows.length ? `<p class="note">בערך ${ltr(anonShowers(p.T0))} מקלחות חמות ברצף</p>`
       : p.minutes === 0 ? `<p class="advice ok">✅ ${running ? 'אפשר לכבות את הדוד' : 'אין צורך להדליק דוד'}</p>`
       : running && p.minutes >= 3 ? `<p class="advice warn">🔥 הדוד דלוק – צריך עוד כ-${ltr(p.minutes)} דקות${p.withHeater < p.total ? ` (יספיק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף)${why('heat-each-or-all')}` : why('how-long')}</p>`
       : p.minutes < 3 ? `<p class="advice warn">⚠️ הדוד כבר חם, אבל יספיק רק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף – כדאי לפזר את המקלחות${why('heat-each-or-all')}</p>`
       : `<p class="advice warn">🔌 להדליק דוד כ-${ltr(p.minutes)} דקות לפני${p.withHeater < p.total ? ` – יספיק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף${why('heat-each-or-all')}` : why('how-long')}</p>`;
+  }
+
+  function slotCard(title, t, slot, now) {
+    const p = plan(t, slot);
+    const status = !p.rows.length ? '' : p.rows.every(r => r.st === 'ok') ? 'ok' : p.rows.some(r => r.st === 'ok') ? 'partial' : 'cold';
+    const advice = adviceHtml(p, slot === 'now' && activeRun(now));
     return `<div class="slot ${status}">
       <div class="slot-h"><b>${title}</b> <span class="note">${dayWord(t, now)} ${ltr(hhmm(t))}</span></div>
       <div class="slot-t">${ltr('~' + fmt(p.T0) + '°C')}</div>
@@ -655,26 +689,18 @@
     if (welcome.open && fam.members.length && !welcome.added.length) { welcome.open = false; store.set('hwm.welcomeDone', true); }
     if (welcome.done) {
       box.innerHTML = `<section class="card welcome"><p>${welcome.done}</p>
-        <p class="note">אחרי כל מקלחת – בכרטיס "רישום מקלחת" למטה: מי התקלח, ואיך היו המים. <button type="button" class="linkish" id="wGo">לרישום מקלחת ↓</button></p></section>`;
+        <p class="note">אחרי כל מקלחת לוחצים על "התקלחתי" בתחתית המסך, ומסמנים איך היו המים. <button type="button" class="linkish" id="wGo">לנסות עכשיו</button></p></section>`;
       return;
     }
     if (!welcome.open) { box.innerHTML = ''; return; }
-    const { tonight: sh, yday } = showersTonight(now);
-    // yesterday at the same hour, so a first-timer has something to compare with
-    const forN = (n) => n === 0 ? 'אף מקלחת חמה' : n === 1 ? 'מקלחת חמה אחת' : `כ-${ltr(n)} מקלחות חמות`;
-    const vs = !sh || sh.n == null || !yday || yday.n == null ? ''
-      : yday.n > sh.n ? ` לשם השוואה, אתמול זה הספיק ל${yday.n === 1 ? 'מקלחת אחת' : `כ-${ltr(yday.n)}`} – היום יש פחות שמש.`
-      : yday.n < sh.n ? ` לשם השוואה, אתמול זה הספיק ${yday.n === 0 ? 'לאף מקלחת חמה' : `רק ל${yday.n === 1 ? 'מקלחת אחת' : `כ-${ltr(yday.n)}`}`} – היום יש יותר שמש.`
-      : ' בערך כמו אתמול.';
     box.innerHTML = `<section class="card welcome">
-      <h2>👋 ברוכים הבאים</h2>
-      <p>עוד אין לנו נתונים על המקלחות אצלכם. לפי דוד ממוצע (כ-150 ליטר) והשמש של היום, ${sh && sh.n != null ? `${sh.n === 0 ? 'הערב כנראה <b>לא יהיו מקלחות חמות</b> בלי להדליק דוד' : `הדוד יספיק הערב ל<b>${forN(sh.n)}</b> בלי להדליק דוד`}.${vs}` : 'אפשר להעריך כמה מקלחות חמות יהיו.'} ככל שתרשמו אחרי כל מקלחת איך היו המים, נדייק לדוד שלכם.</p>
-      <p><b>רוצים שנתאים את זה אליכם?</b> רשמו את בני הבית – כל אחד מתקלח אחרת (ארוך או קצר, חם או פושר), והאתר ילמד כל אחד בנפרד.</p>
+      <h2>רוצים תחזית שמדויקת לכם?</h2>
+      <p>ספרו מי מתקלח בבית, ואחרי כל מקלחת סמנו איך היו המים. כל אחד מתקלח אחרת – ארוך או קצר, חם או פושר – והאתר ילמד כל אחד בנפרד.</p>
       ${welcome.added.length ? `<div class="chips">${welcome.added.map(n => `<span>${esc(n)}</span>`).join('')}</div>` : ''}
       <div class="add-row"><input id="wName" placeholder="שם (למשל: נועה)" aria-label="שם"><button type="button" id="wAdd">➕ הוספה</button></div>
       <div class="add-row">
         <button type="button" id="wDone" class="primary" ${welcome.added.length ? '' : 'disabled'}>סיימתי</button>
-        <button type="button" id="wSkip">אמשיך בלי שמות</button>
+        <button type="button" id="wSkip">אני לבד / בלי שמות</button>
       </div>
       <p class="note">בלי שמות נניח שכל המקלחות הן של אדם אחד, ולא נלמד מי אוהב מקלחת ארוכה או חמה במיוחד. אפשר להוסיף שמות גם אחר כך, ב"בני המשפחה".</p>
     </section>`;
@@ -701,7 +727,7 @@
       if (!generic()) commit([{ op: 'member', m: { id: 'gen' + uid(), name: 'מישהו מהבית', liters: null, n: 0, skip: {} } }]);
       else render();
     } else if (b.id === 'wGo') {
-      $('logWho')?.closest('section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      openSheet('log');
     }
   });
   document.addEventListener('keydown', (e) => {
@@ -709,20 +735,238 @@
   });
 
   // ---------- At a glance: the answer first, before the charts ----------
-  function renderSummary(now, cur, sh) {
+  // The tank now, and who tonight's showers are enough for – the one question people come with
+  function renderHero(now, cur, sh, sunToday) {
     const box = $('summary');
-    if (welcome.open || !sh.tonight) { box.innerHTML = ''; return; }
-    const when = dayStart(sh.t) > dayStart(now) ? 'מחר בערב' : 'הערב';
-    box.innerHTML = `<a class="card summary" href="#tankCard" aria-label="לפרטים על מצב הדוד">
-      <div><div class="k">הדוד עכשיו</div><div class="sum-temp">${ltr('~' + fmt(cur) + '°C')}</div></div>
-      <div class="sum-sh">
-        <div class="k">🚿 ${when} (${ltr(hhmm(sh.t))}) בלי להדליק דוד</div>
-        <div class="sum-n ${sh.cls}">${sh.tonight.total != null ? `מספיק ל-${sh.say(sh.tonight)}` : sh.say(sh.tonight)}</div>
-        ${sh.yday ? `<div class="note">אתמול באותה שעה: ${sh.say(sh.yday)}</div>` : ''}
+    if (!sh.tonight) { box.innerHTML = ''; return; }
+    const tomorrowEve = dayStart(sh.t) > dayStart(now);
+    const when = tomorrowEve ? 'מחר בערב' : 'הערב';
+    const tn = sh.tonight;
+    let head, body = '';
+    if (tn.total != null) {
+      const p = plan(sh.t, 'evening');
+      const all = tn.ok === tn.total;
+      head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) בלי להדליק דוד יספיק</div>
+        <div class="big">${all ? (tn.total === 1 ? 'מספיק' : 'לכולם') : tn.ok ? `ל־${ltr(tn.ok)} מתוך ${ltr(tn.total)}` : 'לאף אחד'}</div>`;
+      const ST = { partial: 'ייגמר באמצע', cold: 'קר' };
+      body = `<ul class="people">${p.rows.map(r => `<li class="${r.st}"><span class="dot">${r.st === 'ok' ? CHECK : ''}</span>${esc(r.m.name)}${ST[r.st] ? `<span class="st">${ST[r.st]}</span>` : ''}</li>`).join('')}</ul>
+        ${all ? '' : adviceHtml(p, !!activeRun(now))}`;
+    } else {
+      const n = tn.n;
+      head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) בלי להדליק דוד ${n ? 'יספיק בערך ל־' : ''}</div>
+        <div class="big">${n === 0 ? 'אין מים חמים' : n === 1 ? 'מקלחת אחת' : `${ltr(n)} מקלחות`}</div>
+        <div class="icons">${Array(Math.min(n, 8)).fill(SHOWER).join('')}<span class="off">${SHOWER}</span></div>`;
+    }
+    const sunLeft = sunToday && !tomorrowEve ? sunToday.total - sunToday.soFar : 0;
+    const strip = [sh.yday && `${tomorrowEve ? 'הערב' : 'אתמול'}: ${sh.say(sh.yday)}`, sh.tmrw && `מחר: ${sh.say(sh.tmrw)}`].filter(Boolean).join(' · ');
+    box.innerHTML = `<section class="card hero">
+      <div class="hero-top">
+        ${tankSvg(cur)}
+        <div>${head}</div>
       </div>
-      <span class="sum-more">לפרטים ↓</span>
-    </a>`;
+      ${sunLeft >= 1 ? `<p class="note">☀️ הדוד עוד יתחמם מהשמש בכ-${ltr('+' + Math.round(sunLeft) + '°')} עד הערב</p>` : ''}
+      ${body}
+      ${learnableLogs().length < 3 ? '<p class="note">זו הערכה כללית לדוד ממוצע – עוד לא מכירים את הבית שלכם.</p>' : ''}
+      <div class="hero-strip"><span>${strip}</span><a href="#moreBox" data-more>פרטים וגרפים ‹</a></div>
+    </section>`;
   }
+
+  // A tip for today, and how well the site knows this home by now
+  function renderTips(now) {
+    const k = knowledge();
+    const showKnow = !welcome.open && (k.n || k.named);
+    $('tips').innerHTML = timingTipHtml(now) + (showKnow ? `<section class="card know">
+      <div class="know-h">האתר מכיר אתכם<span>${ltr(k.pct + '%')}</span></div>
+      <div class="bar" role="img" aria-label="${k.pct}%"><i style="width:${k.pct}%"></i></div>
+      <p class="note">${k.hint}</p>
+    </section>` : '');
+  }
+
+  // The two things people do every day, always at hand
+  function renderActions(now) {
+    const a = $('actions');
+    a.hidden = !wx;
+    document.body.classList.toggle('has-actions', !!wx);
+    if (!wx) return;
+    const on = activeRun(now);
+    a.innerHTML = `<button type="button" class="act-shower" data-sheet="log">${SHOWER} התקלחתי</button>
+      <button type="button" class="act-boil${on ? ' on' : ''}" data-sheet="boil">${on ? '🔥 הדוד דלוק' : '🔌 הדלקתי דוד'}</button>`;
+  }
+
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest('[data-more]');
+    if (!a) return;
+    e.preventDefault();
+    $('moreBox').open = true;
+    $('moreBox').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  // ---------- Quick sheets: "I showered" and "I turned the boiler on" ----------
+  // who: the selected person ('gen' = someone at home, before anyone is listed); done: what the log taught us
+  const sheet = { kind: null, who: null, usual: null, editTime: false, timeVal: '', adding: false, done: null };
+
+  // Who usually showers around this time (at least twice in the last month), not counting who just did
+  function usualNow(now) {
+    const tod = (t) => ((t + wx.off) % DAY + DAY) % DAY;
+    const t0 = tod(now);
+    const recent = new Set(fam.logs.filter(l => l.t <= now && now - l.t < 4 * HOUR).map(l => l.member));
+    const count = {};
+    fam.logs.filter(l => l.t <= now && now - l.t < 30 * DAY && !l.boiler && l.outcome !== 'planned').forEach(l => {
+      const d = Math.abs(tod(l.t) - t0);
+      if (Math.min(d, DAY - d) <= 90 * 60000 && member(l.member) && !recent.has(l.member)) count[l.member] = (count[l.member] || 0) + 1;
+    });
+    const best = Object.entries(count).sort((a, b) => b[1] - a[1])[0];
+    return best && best[1] >= 2 ? member(best[0]) : null;
+  }
+
+  function openSheet(kind) {
+    if (!wx) return;
+    Object.assign(sheet, { kind, editTime: false, timeVal: '', adding: false, done: null });
+    if (kind === 'log') {
+      const now = Date.now(), u = usualNow(now);
+      const recent = new Set(fam.logs.filter(l => l.t <= now && now - l.t < 4 * HOUR).map(l => l.member));
+      sheet.usual = u && u.id;
+      sheet.who = u ? u.id : (fam.members.find(m => !recent.has(m.id)) || fam.members[0] || { id: 'gen' }).id;
+    }
+    renderSheet();
+    $('sheet').querySelector('.sheet').focus();
+  }
+  function closeSheet() {
+    sheet.kind = null;
+    renderSheet();
+    $('actions').querySelector('.act-shower')?.focus();
+  }
+
+  function renderSheet() {
+    const w = $('sheet');
+    if (!sheet.kind || !wx) { w.hidden = true; w.innerHTML = ''; document.body.style.overflow = ''; return; }
+    const now = Date.now();
+    let html;
+    if (sheet.done) html = doneHtml(now);
+    else if (sheet.kind === 'log') {
+      const people = fam.members.length ? fam.members : [{ id: 'gen', name: 'מישהו מהבית' }];
+      const u = sheet.usual && sheet.who === sheet.usual && member(sheet.usual);
+      html = `<div class="sheet-row"><span class="k" id="whoLbl">מי התקלח?</span>
+          ${sheet.editTime ? '' : `<button type="button" class="linkish" data-edit-time>עכשיו, ${ltr(hhmm(now))} · שינוי</button>`}</div>
+        ${sheet.editTime ? `<label class="note">מתי התקלחת? <input id="sheetTime" type="datetime-local" value="${sheet.timeVal || localStr(now).slice(0, 16)}"></label>` : ''}
+        <div class="who-chips" role="group" aria-labelledby="whoLbl">
+          ${people.map(m => `<button type="button" data-who="${m.id}" aria-pressed="${m.id === sheet.who}">${esc(m.name)}</button>`).join('')}
+          ${sheet.adding ? '' : '<button type="button" class="add" data-add-who>+ להוסיף שם</button>'}
+        </div>
+        ${sheet.adding ? '<div class="add-row"><input id="sheetName" placeholder="שם (למשל: נועה)" aria-label="שם"><button type="button" data-add-save>הוספה</button></div>' : ''}
+        ${u ? `<p class="note">בדרך כלל ${esc(u.name)} מתקלח/ת בשעה הזו, אז כבר סימנו</p>` : ''}
+        <h2>איך היו המים בסוף המקלחת?</h2>
+        <div class="outs">${[['plenty', 'var(--hot)', 12], ['edge', 'var(--hot)', 7], ['partial', 'var(--mid)', 3], ['none', 'var(--accent)', 0]]
+          .map(([k, c, lv]) => `<button type="button" data-sheet-out="${k}">${thermo(c, lv)}${OUT[k].b}</button>`).join('')}</div>
+        ${learnableLogs().length ? '' : '<p class="note">זה הכול. מהרישום הזה האתר מתחיל ללמוד כמה מים חמים יש אצלכם באמת.</p>'}`;
+    } else {
+      const on = activeRun(now);
+      const mins = on ? Math.round((now - on.t) / 60000) : 0;
+      const eve = plan(nextAt(cfg.evening, now - 3 * HOUR), 'evening');
+      html = on ? `<h2>🔥 הדוד דלוק מאז ${ltr(hhmm(on.t))}</h2>
+          <p class="note">${on.min != null ? `ייכבה בערך ב-${ltr(hhmm(on.t + on.min * 60000))}` : `${ltr(mins)} דק׳ עד עכשיו`}</p>
+          ${adviceHtml(eve, true)}
+          <button type="button" class="big-btn primary" data-sheet-boil-off>כיביתי את הדוד</button>`
+        : `<h2>הדלקתם את הדוד? לכמה זמן?</h2>
+          ${eve.rows.length ? adviceHtml(eve, false) : ''}
+          <div class="boil-grid">${[10, 20, 30, 45, 60, 90].map(m => `<button type="button" data-sheet-boil="${m}">${ltr(m)} דק׳</button>`).join('')}
+            <button type="button" class="wide" data-sheet-boil="open">עד שאכבה</button></div>
+          <p class="note">הדלקה מלפני כמה שעות? אפשר לרשום אותה בדיעבד בכרטיס "הדוד החשמלי".</p>`;
+    }
+    w.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-label="${sheet.kind === 'log' ? 'רישום מקלחת' : 'הדוד החשמלי'}" tabindex="-1">
+      <div class="grab"></div><button type="button" class="sheet-close" data-sheet-close aria-label="סגירה">✕</button>${html}</div>`;
+    w.hidden = false;
+    document.body.style.overflow = 'hidden';
+  }
+
+  function doneHtml(now) {
+    const d = sheet.done;
+    const same = d.lesson === SAME;
+    // what's left for those who haven't showered yet (only when the shower was just now)
+    let left = '';
+    if (now - d.t < 3 * HOUR) {
+      const at = now + 60000;
+      const away = new Set(fam.logs.filter(l => l.t <= at && at - l.t < 4 * HOUR).map(l => l.member));
+      const p = plan(at, 'evening', [], away);
+      const ok = p.rows.filter(r => r.st === 'ok').length;
+      left = `<p>מה נשאר עכשיו: ${p.total ? `יספיק ל-<b>${ltr(ok)} מתוך ${ltr(p.total)}</b> שעוד לא התקלחו` : anonShowers(p.T0) ? `יספיק לעוד <b>~${ltr(anonShowers(p.T0))} מקלחות</b>` : '<b>אין עוד מים חמים</b> בלי להדליק דוד'}.</p>`;
+    }
+    return `<div class="done-ic"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
+      <div class="done-h"><h2>נרשם, תודה!</h2><p class="note">${esc(d.name)} · ${dayWord(d.t, now)} ${ltr(hhmm(d.t))} · ${OUT[d.outcome].t}</p></div>
+      <div class="learned">
+        <b>💡 ${same ? 'זה תואם את מה שכבר למדנו' : 'למדתי משהו חדש'}</b>
+        ${same ? '' : `<p>${esc(d.lesson)}</p>`}
+        <p class="note">לפי המודל היו בדוד כ-${ltr(Math.round(d.T0) + '°')} לפני המקלחת.</p>
+        <div class="know-h">האתר מכיר אתכם<span>${d.k0 === d.k1 ? ltr(d.k1 + '%') : `${ltr(d.k0 + '%')} ← ${ltr(d.k1 + '%')}`}</span></div>
+        <div class="bar" role="img" aria-label="${d.k1}%"><i style="width:${d.k1}%"></i></div>
+      </div>
+      ${left}
+      <button type="button" class="big-btn dark" data-sheet-close>סגירה</button>`;
+  }
+
+  function logShower(outcome) {
+    const v = sheet.editTime && $('sheetTime') && $('sheetTime').value;
+    const t = v ? Date.parse(v + ':00Z') - wx.off : Date.now();
+    const pre = [];
+    let id = sheet.who;
+    if (id === 'gen') { // the first shower without names: log it for "someone at home"
+      id = 'gen' + uid();
+      pre.push({ op: 'member', m: { id, name: 'מישהו מהבית', liters: null, n: 0, skip: {} } });
+      pre.forEach(applyOp);
+      store.set('hwm.welcomeDone', true);
+      welcome.open = false;
+    }
+    const k0 = knowledge().pct;
+    const l = { id: uid(), member: id, t, outcome };
+    const T0 = run(l.t).T;
+    const m = member(id);
+    const before = { liters: need(m), eff: cfg.eff, tau: cfg.tau, heaterEff: cfg.heaterEff };
+    fam.logs.push(l);
+    const ops = fit(); // adjusts cfg and members in place, and returns them as ops to share
+    const text = lesson(before, l);
+    commit([...pre, { op: 'log', l }, ...ops]);
+    sheet.done = { name: m.name, t, outcome, T0, lesson: text, k0, k1: knowledge().pct };
+    renderSheet();
+  }
+
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b && b.dataset.sheet) { openSheet(b.dataset.sheet); return; }
+    const w = $('sheet');
+    if (e.target === w) { closeSheet(); return; } // tap outside the sheet
+    if (!b || !w.contains(b)) return;
+    const d = b.dataset;
+    if (d.sheetClose != null) closeSheet();
+    else if (d.who) {
+      sheet.who = d.who;
+      w.querySelectorAll('[data-who]').forEach(x => x.setAttribute('aria-pressed', x.dataset.who === d.who));
+    } else if (d.editTime != null) { sheet.editTime = true; renderSheet(); $('sheetTime').focus(); }
+    else if (d.addWho != null) {
+      if ($('sheetTime')) sheet.timeVal = $('sheetTime').value;
+      sheet.adding = true; renderSheet(); $('sheetName').focus();
+    } else if (d.addSave != null) {
+      const name = $('sheetName').value.trim();
+      if (!name) return;
+      if ($('sheetTime')) sheet.timeVal = $('sheetTime').value;
+      const id = uid();
+      commit([{ op: 'member', m: { id, name, liters: null, n: 0, skip: {} } }]);
+      Object.assign(sheet, { who: id, usual: null, adding: false });
+      renderSheet();
+    } else if (d.sheetOut) logShower(d.sheetOut);
+    else if (d.sheetBoil) {
+      commit([{ op: 'boiler', b: { id: uid(), t: Date.now(), min: d.sheetBoil === 'open' ? null : +d.sheetBoil } }]);
+      closeSheet();
+    } else if (d.sheetBoilOff != null) {
+      const r = activeRun(Date.now());
+      if (r) commit([{ op: 'boiler', b: { id: r.id, min: Math.floor((Date.now() - r.t) / 600) / 100 } }]); // rounded down so the run has ended by now
+      closeSheet();
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (!sheet.kind) return;
+    if (e.key === 'Escape') closeSheet();
+    else if (e.key === 'Enter' && e.target.id === 'sheetName') $('sheet').querySelector('[data-add-save]').click();
+  });
 
   // A rendering bug should show up as a message, not as a silently missing section
   function render() {
@@ -738,7 +982,8 @@
     const root = $('family');
     $('locHome').appendChild($('locCard')); // take it out before the section is rebuilt
     renderWelcome(Date.now());
-    if (!wx) { root.innerHTML = ''; $('summary').innerHTML = ''; placeHome(); return; }
+    renderActions(Date.now());
+    if (!wx) { root.innerHTML = ''; ['summary', 'tips', 'tankSlot'].forEach(id => { $(id).innerHTML = ''; }); placeHome(); return; }
     const now = Date.now();
     const cur = run(now).T;
     const morning = nextAt(cfg.morning, now);
@@ -749,22 +994,19 @@
     // one journal for showers and boiler runs, newest first (5 visible, the rest by scrolling)
     const journal = fam.logs.map(l => ({ t: l.t, l })).concat(fam.boilers.map(b => ({ t: b.t, b })))
       .sort((a, b) => b.t - a.t).slice(0, 200);
-    const defaultTime = localStr(now).slice(0, 16);
     const active = activeRun(now);
     const mins = (b) => Math.round((runEnd(b, now) - b.t) / 60000);
     const sh = showersTonight(now);
     const sunToday = run().gains[localStr(now).slice(0, 10)];
-    renderSummary(now, cur, sh);
+    renderHero(now, cur, sh, sunToday);
+    renderTips(now);
 
-    root.innerHTML = `
-    <section class="card fam" id="tankCard">
-      <h2>🚿 מצב הדוד</h2>
-      ${sync.conf ? `<div class="note sync-status">${syncStatusText()}</div>` : '<button type="button" id="openShare" class="linkish">🔗 לשתף את היומן עם כל המשפחה</button>'}
+    // the tank over the day goes with the other charts, under "details"
+    $('tankSlot').innerHTML = `<section class="card fam" id="tankCard">
+      <h2>🚿 הדוד לאורך היום</h2>
       <div class="tank-now">
         <div><div class="k">טמפ׳ משוערת עכשיו</div><div class="big">${ltr('~' + fmt(cur) + '°C')}</div></div>
-        ${sh.html}
-        ${timingTipHtml(now)}
-        <div class="note drop">כל מקלחת של ${ltr(cfg.perPerson)} ליטר מכניסה לדוד מים קרים ומורידה אותו בכ-${ltr(fmt(cfg.perPerson * perLiter(), 1) + '°')}</div>
+        <div class="note drop">כל מקלחת של ${ltr(cfg.perPerson)} ליטר מכניסה לדוד מים קרים ומורידה אותו בכ-${ltr(fmt(cfg.perPerson * perLiter(), 1) + '°')} · מקלחת ב-${ltr(tsh() + '°')}, מים מהברז ${ltr(tin() + '°')}</div>
       </div>
       ${sunToday && sunToday.total >= 0.5 ? `<p class="note">☀️ השמש מוסיפה לדוד היום כ-${ltr('+' + Math.round(sunToday.total) + '°')}</p>` : ''}
       <div class="chart" id="tankChart"></div>
@@ -777,6 +1019,21 @@
       ${fam.members.some(m => !isGeneric(m)) ? '' : '<p class="note">הוסיפו בני משפחה (למטה) כדי לראות מי יכול להתקלח בכל זמן.</p>'}
       <div class="slots">${slots.map(s => slotCard(s[0], s[1], s[2], now)).join('')}</div>
       <p class="note">הסדר ברשימה הוא סדר המקלחות. ההערכה כוללת רק הדלקות דוד שנרשמו.</p>
+    </section>`;
+
+    root.innerHTML = `
+    <section class="card fam" id="logCard">
+      <h2>📒 היומן – מקלחות והדלקות דוד${journal.length ? ` (${ltr(journal.length)})` : ''}</h2>
+      ${sync.conf ? `<div class="note sync-status">${syncStatusText()}</div>` : '<button type="button" id="openShare" class="linkish">🔗 לשתף את היומן עם כל המשפחה</button>'}
+      ${journal.length ? `<div class="log-scroll" id="journal"><table class="logs"><thead><tr><th>מתי</th><th>מי / מה</th><th>תוצאה</th><th></th></tr></thead><tbody>
+        ${journal.map(({ t, l, b }) => `<tr class="${b ? 'boil-row' : ''}"><td>${dayWord(t, now)} ${ltr(hhmm(t))}</td>${l ? `
+          <td>${esc(member(l.member)?.name ?? '?')}${l.boiler ? ' 🔌' : ''}</td>
+          <td style="color:${OUT[l.outcome].c}">${OUT[l.outcome].i} ${OUT[l.outcome].t}</td>
+          <td><button type="button" class="x" data-del-log="${l.id}" aria-label="מחיקה">✕</button></td>` : `
+          <td>🔌 דוד חשמלי</td>
+          <td>${ltr(mins(b))} דק׳${b.min == null ? (b === active ? ' (דלוק)' : ' (לא נרשם כיבוי)') : b === active ? ' (דלוק)' : ''}</td>
+          <td><button type="button" class="x" data-del-boil="${b.id}" aria-label="מחיקה">✕</button></td>`}</tr>`).join('')}
+      </tbody></table></div>` : '<p class="note">עוד לא נרשמו מקלחות. אחרי מקלחת לוחצים על "התקלחתי" בתחתית המסך.</p>'}
     </section>
 
     <section class="card fam" id="boilerCard">
@@ -799,30 +1056,6 @@
         </div>
       </details>
       <p class="note">מהמקלחות שאחרי הדלקה המודל לומד כמה מהר הדוד שלכם מחמם, וככה ההמלצה "כמה דקות להדליק" משתפרת.</p>
-    </section>
-
-    <section class="card fam">
-      <h2>📝 רישום מקלחת</h2>
-      ${fam.members.length ? `
-      <div class="log-form">
-        <label>מי התקלח<select id="logWho">${fam.members.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></label>
-        <label>מתי<input id="logTime" type="datetime-local" value="${defaultTime}"></label>
-      </div>
-      <div class="note">איך היו המים? (ואם היה חם עד הסוף – בסוף המקלחת עוד הוספת קר, או שכבר היית רק על חם?)</div>
-      <div class="out-btns">
-        ${Object.entries(OUT).filter(([, o]) => o.b).map(([k, o]) => `<button type="button" data-out="${k}">${o.i} ${o.b}</button>`).join('')}
-      </div>
-      <div id="learnMsg" class="note">${learnNote && Date.now() - learnNote.at < 10 * 60000 ? esc(learnNote.text) : ''}</div>` : '<p class="note">קודם מוסיפים בני משפחה.</p>'}
-      ${journal.length ? `<div class="journal-h">📒 היומן – מקלחות והדלקות דוד (${ltr(journal.length)})</div>
-      <div class="log-scroll" id="journal"><table class="logs"><thead><tr><th>מתי</th><th>מי / מה</th><th>תוצאה</th><th></th></tr></thead><tbody>
-        ${journal.map(({ t, l, b }) => `<tr class="${b ? 'boil-row' : ''}"><td>${dayWord(t, now)} ${ltr(hhmm(t))}</td>${l ? `
-          <td>${esc(member(l.member)?.name ?? '?')}${l.boiler ? ' 🔌' : ''}</td>
-          <td style="color:${OUT[l.outcome].c}">${OUT[l.outcome].i} ${OUT[l.outcome].t}</td>
-          <td><button type="button" class="x" data-del-log="${l.id}" aria-label="מחיקה">✕</button></td>` : `
-          <td>🔌 דוד חשמלי</td>
-          <td>${ltr(mins(b))} דק׳${b.min == null ? (b === active ? ' (דלוק)' : ' (לא נרשם כיבוי)') : b === active ? ' (דלוק)' : ''}</td>
-          <td><button type="button" class="x" data-del-boil="${b.id}" aria-label="מחיקה">✕</button></td>`}</tr>`).join('')}
-      </tbody></table></div>` : ''}
     </section>
 
     <details class="card fam" id="famBox" ${fam.members.length ? '' : 'open'}>
@@ -1003,17 +1236,6 @@
       if (!name) return;
       commit([{ op: 'member', m: { id: uid(), name, liters: null, n: 0, skip: {} } }]);
       $('newName').focus();
-    } else if (b.dataset.out) {
-      const v = $('logTime').value;
-      const t = v ? Date.parse(v + ':00Z') - wx.off : Date.now();
-      const l = { id: uid(), member: $('logWho').value, t, outcome: b.dataset.out };
-      const T0 = run(l.t).T;
-      const m = member(l.member);
-      const before = { liters: need(m), eff: cfg.eff, tau: cfg.tau, heaterEff: cfg.heaterEff };
-      fam.logs.push(l);
-      const ops = fit(); // adjusts cfg and members in place, and returns them as ops to share
-      learnNote = { text: `נרשם ✓ לפי המודל היו בדוד ~${Math.round(T0)}°C. ${lesson(before, l)}`, at: Date.now() };
-      commit([{ op: 'log', l }, ...ops]);
     } else if (b.dataset.delLog) {
       fam.logs = fam.logs.filter(l => l.id !== b.dataset.delLog);
       commit([{ op: 'delLog', id: b.dataset.delLog }, ...fit()]);

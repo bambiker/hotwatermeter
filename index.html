@@ -30,6 +30,9 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#e08a00">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700;800&display=swap">
 <style>
   :root {
     --bg: #f7f6f3;
@@ -60,29 +63,40 @@
     --good: #66bb6a; --mid: #f0a040; --bad: #ef6b6b; --accent: #6ea2f0; --hot: #ff7a50;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   span[dir="ltr"] { unicode-bidi: isolate; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
-    font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif; line-height: 1.5;
+    font-family: Heebo, system-ui, -apple-system, "Segoe UI", Arial, sans-serif; line-height: 1.5;
   }
+  body.has-actions { padding-bottom: 88px; }
   main { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
   h1 { font-size: 1.6rem; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
   h1 .logo { width: 44px; height: 44px; }
   .install { margin-inline-start: auto; font-size: .85rem; font-weight: 600; padding: 4px 12px; border-radius: 999px; border-color: var(--sun); color: var(--sun); }
   .install-help { margin-bottom: 16px; font-size: .92rem; }
   .install-help p { margin: 0 0 6px; }
-  .summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px; margin-bottom: 16px; text-decoration: none; color: inherit; border: 2px solid var(--sun); }
-  .summary .k { color: var(--ink-3); font-size: .8rem; }
-  .summary .sum-temp { font-size: 2.2rem; font-weight: 700; color: var(--hot); line-height: 1.1; font-variant-numeric: tabular-nums; }
-  .summary .sum-n { font-size: 1.35rem; font-weight: 700; }
-  .summary .sum-n.good { color: var(--good); } .summary .sum-n.mid { color: var(--mid); } .summary .sum-n.bad { color: var(--bad); }
-  .summary .sum-more { margin-inline-start: auto; color: var(--accent); font-size: .85rem; align-self: flex-end; }
   .sub { color: var(--ink-2); margin: 0 0 20px; }
   .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
   .loc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
   .loc .place { font-weight: 600; margin-inline-end: auto; }
-  .loc.asking { border: 2px solid var(--sun); }
-  .loc-ask { flex-basis: 100%; font-size: 1.05rem; }
+  .loc-q { display: flex; gap: 8px; }
+  /* once the place is known it's a slim bar; "שינוי" opens the search again */
+  .loc #locEdit { display: none; }
+  #locHome .loc:not(.asking):not(.editing) { padding: 10px 16px; }
+  #locHome .loc:not(.asking):not(.editing) > :not(.place):not(#locEdit) { display: none; }
+  #locHome .loc:not(.asking):not(.editing) #locEdit { display: inline; }
+  .loc .ask-only { display: none; }
+  /* first visit: one big question, one big button */
+  .loc.asking { flex-direction: column; align-items: stretch; gap: 12px; padding: 24px 20px; border-radius: 22px; }
+  .loc.asking .place:empty { display: none; }
+  .loc.asking .ask-only { display: block; margin: 0; text-align: center; }
+  .loc.asking #geo { min-height: 54px; border-radius: 16px; background: var(--accent); border-color: var(--accent); color: var(--surface); font-weight: 700; font-size: 1.05rem; }
+  .loc.asking .loc-q input { flex: 1; min-height: 48px; border-radius: 14px; }
+  .loc.asking .loc-q button { min-height: 48px; border-radius: 14px; }
+  .loc-ask { flex-basis: 100%; }
+  .loc-ask h2 { font-size: 1.8rem; line-height: 1.15; font-weight: 800; margin: 0 0 8px; }
+  .loc-ask p { margin: 0; color: var(--ink-2); font-size: 1.05rem; }
   #locSlot .loc { border: none; padding: 0; margin: 8px 0 0; background: none; }
   .home-loc { margin: 12px 0 4px; }
   .home-loc .k { color: var(--ink-2); font-size: .9rem; font-weight: 600; }
@@ -91,6 +105,7 @@
     font: inherit; color: var(--ink); background: var(--surface);
     border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
   }
+  a { color: var(--accent); }
   button { cursor: pointer; }
   button:hover { border-color: var(--ink-3); }
   button:disabled { opacity: .45; cursor: default; }
@@ -136,15 +151,13 @@
   .tank-now { display: flex; gap: 32px; flex-wrap: wrap; margin-bottom: 8px; }
   .tank-now .k { color: var(--ink-3); font-size: .8rem; }
   .tank-now .big { font-size: 2.6rem; font-weight: 700; line-height: 1.1; color: var(--hot); font-variant-numeric: tabular-nums; }
-  .showers .k { color: var(--ink-3); font-size: .8rem; }
-  .showers .big2.good { color: var(--good); } .showers .big2.mid { color: var(--mid); } .showers .big2.bad { color: var(--bad); }
   .acc { font-weight: 600; margin: 4px 0 8px; }
   .about { margin-top: 28px; color: var(--ink-2); font-size: .92rem; }
   .about h2 { font-size: 1.05rem; color: var(--ink); margin: 0 0 6px; }
   .about ul { padding-inline-start: 20px; margin: 6px 0; }
   .about a { color: var(--accent); }
-  .welcome { margin-bottom: 16px; border: 2px solid var(--sun); }
-  .welcome h2 { font-size: 1.15rem; margin: 0 0 8px; }
+  .welcome { margin-bottom: 12px; border: none; border-radius: 22px; padding: 18px 20px; background: color-mix(in srgb, var(--accent) 11%, var(--surface)); }
+  .welcome h2 { font-size: 1.2rem; font-weight: 800; margin: 0 0 8px; }
   .welcome p { margin: 0 0 10px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
   .chips span { background: color-mix(in srgb, var(--sun) 15%, transparent); border-radius: 999px; padding: 2px 10px; font-weight: 600; }
@@ -154,9 +167,7 @@
   .log-scroll thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
   .boil-row td { color: var(--ink-2); }
   a.why { font-weight: 400; font-size: .85rem; white-space: nowrap; }
-  .tip-when { flex-basis: 100%; margin: 4px 0 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--sun) 12%, transparent); font-size: .92rem; }
   .tank-now .drop { align-self: end; max-width: 260px; margin: 0 0 6px; }
-  .tank-now .big2 { font-size: 1.6rem; font-weight: 700; line-height: 1.3; font-variant-numeric: tabular-nums; }
   .slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 14px; }
   .slot { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; border-inline-start: 4px solid var(--line); }
   .slot.ok { border-inline-start-color: var(--good); }
@@ -183,6 +194,86 @@
   .boiler-on { font-weight: 600; color: var(--mid); margin: 4px 0 10px; }
   details.adv summary { cursor: pointer; color: var(--ink-2); font-size: .9rem; }
   .file-btn { font: inherit; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+
+  /* ---------- The answer first: tonight's showers, the solar index, a tip, how well we know you ---------- */
+  .hero { display: flex; flex-direction: column; gap: 14px; margin-bottom: 12px; border-radius: 22px; padding: 18px; }
+  .hero-top { display: flex; gap: 16px; align-items: center; }
+  .hero .tank { flex: none; width: 64px; height: auto; }
+  .hero .k { color: var(--ink-2); font-size: .95rem; }
+  .hero .big { font-size: 2.3rem; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .hero .icons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; color: var(--hot); }
+  .hero .icons .off { color: var(--line); }
+  .hero .note { margin: 0; }
+  .hero .advice { margin: 0; }
+  .people { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
+  .people li { display: flex; align-items: center; gap: 8px; background: var(--bg); border-radius: 12px; padding: 8px 10px; font-weight: 500; }
+  .people .dot { flex: none; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-sizing: border-box; }
+  .people .ok .dot { background: var(--hot); color: var(--surface); }
+  .people .partial .dot { border: 2px solid var(--mid); }
+  .people .cold .dot { border: 2px solid var(--accent); }
+  .people .partial, .people .cold { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+  .people .st { margin-inline-start: auto; font-size: .78rem; color: var(--ink-2); }
+  .hero-strip { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: .92rem; color: var(--ink-2); }
+  .hero-strip a { margin-inline-start: auto; font-weight: 700; color: var(--accent); text-decoration: none; }
+  .idx { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; padding: 12px 16px; border-radius: 18px; }
+  .idx-num { display: flex; flex-direction: column; align-items: center; min-width: 56px; }
+  .idx-num b { font-size: 2rem; font-weight: 800; line-height: 1; color: var(--mid); font-variant-numeric: tabular-nums; }
+  .idx-num span { font-size: .75rem; color: var(--ink-2); }
+  .idx-main { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+  .idx-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .idx-h a { font-size: .85rem; color: var(--accent); text-decoration: none; white-space: nowrap; }
+  .idx .note { margin: 0; }
+  .bar { position: relative; height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--sun) 16%, var(--surface)); }
+  .bar > i { display: block; height: 100%; border-radius: 4px; background: var(--sun); }
+  .bar > b { position: absolute; top: -3px; width: 2px; height: 14px; background: var(--ink-2); }
+  .tip-card { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 12px; padding: 12px 14px; border-radius: 18px; background: color-mix(in srgb, var(--sun) 15%, var(--surface)); }
+  .tip-card p { margin: 0; }
+  .know { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; padding: 12px 14px; border-radius: 18px; }
+  .know-h { display: flex; justify-content: space-between; font-weight: 700; }
+  .know-h span, .learned .know-h span { color: var(--accent); }
+  .know .bar, .learned .bar { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+  .know .bar > i, .learned .bar > i { background: var(--accent); }
+  .know .note { margin: 0; }
+  details.more { margin: 4px 0 16px; }
+  details.more > summary { cursor: pointer; list-style: none; font-weight: 700; color: var(--accent); padding: 10px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+  details.more > summary::-webkit-details-marker { display: none; }
+  details.more[open] > summary { margin-bottom: 12px; }
+  details.more .compare { margin: 16px 0; }
+
+  /* ---------- Quick actions (bottom bar) and their sheets ---------- */
+  .actions { position: fixed; inset-inline: 0; bottom: 0; z-index: 10; max-width: 980px; margin: 0 auto; display: flex; gap: 8px;
+    padding: 14px 16px calc(12px + env(safe-area-inset-bottom)); background: linear-gradient(transparent, var(--bg) 40%); }
+  .actions button { min-height: 56px; border-radius: 28px; display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: 700; }
+  .act-shower { flex: 1; background: var(--hot); border-color: var(--hot); color: var(--surface); font-weight: 800 !important; font-size: 1.1rem; box-shadow: 0 6px 18px color-mix(in srgb, var(--hot) 30%, transparent); }
+  .act-shower:hover { border-color: var(--hot); }
+  .act-boil { padding: 0 16px; }
+  .act-boil.on { border-color: var(--mid); color: var(--mid); }
+  .sheet-wrap { position: fixed; inset: 0; z-index: 20; background: rgba(20, 20, 22, .45); display: flex; align-items: flex-end; justify-content: center; }
+  .sheet { position: relative; width: 100%; max-width: 560px; max-height: 92vh; overflow-y: auto; background: var(--surface); border-radius: 24px 24px 0 0;
+    padding: 10px 20px calc(24px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 16px; }
+  .sheet .grab { width: 44px; height: 5px; border-radius: 3px; background: var(--line); align-self: center; }
+  .sheet h2 { font-size: 1.3rem; font-weight: 800; margin: 0; }
+  .sheet .note { margin: 0; }
+  .sheet-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .sheet .k { font-weight: 700; color: var(--ink-2); }
+  .sheet-close { position: absolute; top: 10px; inset-inline-end: 12px; border: none; background: none; font-size: 1.2rem; color: var(--ink-2); padding: 6px 10px; }
+  .who-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .who-chips button { min-height: 44px; border-radius: 22px; padding: 0 16px; }
+  .who-chips button[aria-pressed="true"] { border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent); font-weight: 700; }
+  .who-chips .add { border-style: dashed; color: var(--ink-2); }
+  .outs { display: flex; flex-direction: column; gap: 8px; }
+  .outs button { min-height: 58px; border-radius: 16px; display: flex; align-items: center; gap: 12px; padding: 8px 14px; font-weight: 700; text-align: start; }
+  .outs svg { flex: none; }
+  .boil-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .boil-grid button { min-height: 52px; border-radius: 14px; font-weight: 700; }
+  .boil-grid .wide { grid-column: 1 / -1; }
+  .done-ic { align-self: center; width: 72px; height: 72px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--good); background: color-mix(in srgb, var(--good) 15%, var(--surface)); }
+  .done-h { text-align: center; }
+  .done-h h2 { font-size: 1.6rem; }
+  .learned { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 18px; background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+  .learned p { margin: 0; }
+  .big-btn { min-height: 52px; border-radius: 26px; font-weight: 700; }
+  .big-btn.dark { background: var(--ink); border-color: var(--ink); color: var(--bg); }
 
   footer { color: var(--ink-3); font-size: .8rem; margin-top: 24px; }
   footer a { color: var(--accent); }
@@ -214,21 +305,32 @@
   <p id="famPlace" class="note" hidden></p>
 
   <div id="locHome"><div class="card loc" id="locCard">
-    <div class="loc-ask" id="locAsk" hidden><b>👋 ברוכים הבאים!</b> איפה הבית? לפי המיקום נחשב כמה שמש מגיעה לדוד.</div>
+    <div class="loc-ask" id="locAsk" hidden><h2>יהיו מים חמים הערב?</h2><p>נבדוק כמה שמש יש אצלכם היום, ונגיד לכמה מקלחות יספיק דוד השמש.</p></div>
     <span class="place" id="place">…</span>
+    <button id="locEdit" type="button" class="linkish">שינוי מיקום</button>
     <button id="geo" type="button">📍 המיקום שלי</button>
-    <input id="q" type="search" placeholder="חיפוש עיר…" aria-label="חיפוש עיר">
-    <button id="search" type="button">חפש</button>
+    <p class="note ask-only">או חפשו יישוב:</p>
+    <div class="loc-q">
+      <input id="q" type="search" placeholder="חיפוש עיר…" aria-label="חיפוש עיר">
+      <button id="search" type="button">חפש</button>
+    </div>
     <div id="results" style="flex-basis:100%"></div>
+    <p class="note ask-only">בלי הרשמה ובלי פרטים אישיים</p>
   </div></div>
 
   <noscript><p class="card">האתר צריך JavaScript כדי לחשב את מצב הדוד לפי מזג האוויר.</p></noscript>
-  <div id="welcome"></div>
-  <div id="summary"></div>
   <div id="status" class="note"></div>
-  <div class="days" id="days"></div>
+  <div id="summary"></div>
+  <div id="indexCard"></div>
+  <div id="tips"></div>
+  <div id="welcome"></div>
 
-  <div class="card compare" id="compare" hidden></div>
+  <details class="more" id="moreBox" hidden>
+    <summary>📊 פרטים וגרפים – השמש והדוד לאורך היום</summary>
+    <div class="days" id="days"></div>
+    <div class="card compare" id="compare" hidden></div>
+    <div id="tankSlot"></div>
+  </details>
 
   <div id="family"></div>
 
@@ -251,6 +353,8 @@
     טמפ׳ הדוד היא סימולציה שלומדת מהמקלחות שנרשמות.
   </footer>
 </main>
+<div class="actions" id="actions" hidden></div>
+<div class="sheet-wrap" id="sheet" hidden></div>
 
 <script>
 (() => {
@@ -416,6 +520,28 @@
     // today first: it's the one that matters (top on mobile, right side in RTL)
     [...days].reverse().forEach(d => $('days').appendChild(dayCard(d, yMax)));
     renderCompare(days);
+    renderIndex(days);
+    $('moreBox').hidden = false;
+  }
+
+  // The world-wide number, near the top for those who like a number to compare days and places
+  function renderIndex(days) {
+    const t = days.find(d => d.label === 'היום'), y = days.find(d => d.label === 'אתמול');
+    if (!t) { $('indexCard').innerHTML = ''; return; }
+    const r = rating(t.score);
+    $('indexCard').innerHTML = `<section class="card idx">
+      <div class="idx-num"><b>${t.score}</b><span>מתוך 100</span></div>
+      <div class="idx-main">
+        <div class="idx-h"><b>מדד חימום סולארי היום</b><a href="faq.html#index">מה זה?</a></div>
+        <div class="bar" role="img" aria-label="${t.score} מתוך 100; ביום בהיר כאן ${t.clearScore}"><i style="width:${t.score}%"></i><b style="inset-inline-start:${Math.min(99, t.clearScore)}%"></b></div>
+        <p class="note">${r.t}${y ? ` · אתמול ${y.score}` : ''} · ביום בהיר כאן ${t.clearScore}${sunAhead(t) ? ' · כולל תחזית לשעות שנותרו' : ''}</p>
+      </div>
+    </section>`;
+  }
+  {
+    const more = $('moreBox'), key = 'hwm.open.moreBox';
+    if (store.get(key, false)) more.open = true;
+    more.addEventListener('toggle', () => store.set(key, more.open));
   }
 
   // the sun can still add heat today (false after sunset: the day's number is final)
@@ -519,7 +645,7 @@
     $('results').innerHTML = '';
     $('q').value = '';
     $('locAsk').hidden = true;
-    $('locCard').classList.remove('asking');
+    $('locCard').classList.remove('asking', 'editing');
     load();
     if (!fromFamily) document.dispatchEvent(new CustomEvent('hwm:loc', { detail: l }));
   }
@@ -569,6 +695,7 @@
     } catch (e) { $('results').textContent = 'שגיאה בחיפוש: ' + e.message; }
   }
   $('search').addEventListener('click', search);
+  $('locEdit').addEventListener('click', () => { $('locCard').classList.add('editing'); $('q').focus(); });
   $('q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
 
   if (inFamily()) {
