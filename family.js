@@ -29,7 +29,8 @@
     tankMax: 80,      // highest the sun can take the tank (no solar limiter: ~80 on a hot idle day)
     perPerson: 40,    // default liters of shower-temperature water per shower
     morning: '07:00',
-    evening: '19:00'
+    evening: '19:00',
+    kwhPrice: 0.6352  // ₪ per kWh, Israeli home tariff incl. VAT (July 2026) – for the savings card
   };
   // Settings migrations. 2: tilted-collector irradiance with temperature-dependent losses, so
   // calibration learned under the old horizontal model starts again. 3: seasonal shower temperature.
@@ -261,13 +262,14 @@
   const perLiter = () => Math.max(1, tsh() - tin()) / cfg.liters;
   const airMean = () => (wx ? wx.airMean : 20); // computed once per forecast (it's used in every simulation step)
   // Comfortable shower temperature follows the season too: ~41° when it's 13° out, ~37° at 28°
-  function tsh() {
-    return cfg.tshower ?? Math.round(Math.min(42, Math.max(36, 44 - 0.25 * airMean())));
+  // (air: the season's air temperature; the savings estimate passes an older date's)
+  function tsh(air = airMean()) {
+    return cfg.tshower ?? Math.round(Math.min(42, Math.max(36, 44 - 0.25 * air)));
   }
   // Mains water follows the season: by default the average air temperature of the last days
-  function tin() {
+  function tin(air = airMean()) {
     if (cfg.tin != null) return cfg.tin;
-    return Math.round(Math.min(26, Math.max(12, airMean())));
+    return Math.round(Math.min(26, Math.max(12, air)));
   }
   const drawOf = (m) => need(m) * perLiter();
   // How much shower-temperature water the tank can still give before it drops to shower temperature
@@ -607,6 +609,44 @@
   }
 
   // ---------- How well we know this home (0–100%): grows with logged showers, and with each named person's ----------
+  // ---------- Money: what the sun saved, against heating every logged shower with electricity ----------
+  // Showers older than the fetched month have no weather, so their season is estimated: air temperature
+  // swings about ±7° over the year around today's (warmest mid-July in the north, mid-January in the south).
+  function airAt(t) {
+    const season = (x) => { const d = new Date(x); return Math.cos(2 * Math.PI * ((x - Date.UTC(d.getUTCFullYear(), 0, 1)) / DAY - 200) / 365); };
+    return airMean() + (wx.lat < 0 ? -7 : 7) * (season(t) - season(Date.now()));
+  }
+  // A shower with hot water to the end counts whole, one that ran out half, one with no hot water not at all.
+  // Against it: the electricity the boiler actually used (logged runs × element power). Conservative – it
+  // leaves out unlogged showers and the tank losses an electric-only boiler would also pay for.
+  const SHOWER_SHARE = { plenty: 1, edge: 1, full: 1, partial: 0.5, none: 0 };
+  function savings(from, now) {
+    const logs = fam.logs.filter(l => l.t >= from && l.t <= now && SHOWER_SHARE[l.outcome] != null);
+    const needKwh = logs.reduce((s, l) => {
+      const air = airAt(l.t);
+      return s + SHOWER_SHARE[l.outcome] * need(member(l.member)) * Math.max(0, tsh(air) - tin(air)) * CP / 3600;
+    }, 0);
+    const runs = fam.boilers.filter(b => runEnd(b, now) > from && b.t <= now);
+    const usedKwh = runs.reduce((s, b) => s + (Math.min(runEnd(b, now), now) - Math.max(b.t, from)) / HOUR * cfg.heaterKw, 0);
+    return { showers: logs.length, runs: runs.length, needKwh, usedKwh, money: Math.max(0, needKwh - usedKwh) * cfg.kwhPrice };
+  }
+  const shekels = (x) => `${fmt(x, x < 10 ? 1 : 0)} ₪`;
+  function savingsHtml(now) {
+    const first = Math.min(...fam.logs.filter(l => l.outcome !== 'planned').map(l => l.t));
+    if (!isFinite(first) || fam.logs.length < 3) return '';
+    const month = savings(now - 30 * DAY, now), all = savings(first, now);
+    const since = localStr(first).slice(0, 10).split('-').reverse().slice(0, 2).join('.');
+    const fresh = first >= now - 30 * DAY; // everything is from the last month anyway
+    return `<section class="card know money">
+      <div class="know-h">💰 השמש חסכה לכם</div>
+      <div class="money-row">
+        ${fresh ? '' : `<div><b>${shekels(month.money)}</b><span>בחודש האחרון</span></div>`}
+        <div><b>${shekels(all.money)}</b><span>מאז שהתחלתם לרשום (${ltr(since)})</span></div>
+      </div>
+      <p class="note">לעומת דוד חשמלי בלבד: ${ltr(all.showers)} המקלחות שנרשמו צריכות כ-${ltr(fmt(all.needKwh, 0))} קוט״ש, ובפועל הדוד החשמלי עבד כ-${ltr(fmt(all.usedKwh, 0))} קוט״ש. לפי ${ltr(fmt(cfg.kwhPrice, 2))} ₪ לקוט״ש. <a href="faq.html#savings">איך מחשבים?</a></p>
+    </section>`;
+  }
+
   const KNOW_PER_PERSON = 5;
   function knowledge() {
     const logs = learnableLogs();
@@ -775,7 +815,7 @@
   function renderTips(now) {
     const k = knowledge();
     const showKnow = !welcome.open && (k.n || k.named);
-    $('tips').innerHTML = timingTipHtml(now) + (showKnow ? `<section class="card know">
+    $('tips').innerHTML = timingTipHtml(now) + savingsHtml(now) + (showKnow ? `<section class="card know">
       <div class="know-h">האתר מכיר אתכם<span>${ltr(k.pct + '%')}</span></div>
       <div class="bar" role="img" aria-label="${k.pct}%"><i style="width:${k.pct}%"></i></div>
       <p class="note">${k.hint}</p>
@@ -1115,6 +1155,7 @@
       <div class="grid-inputs">
         <label>שעת מקלחות בוקר<input data-cfg="morning" type="time" value="${cfg.morning}"></label>
         <label>שעת מקלחות ערב<input data-cfg="evening" type="time" value="${cfg.evening}"></label>
+        <label>מחיר חשמל (₪ לקוט״ש, כולל מע״מ)<input data-cfg="kwhPrice" type="number" min="0.1" max="5" step="0.01" value="${cfg.kwhPrice}"></label>
       </div>
       <details class="adv">
         <summary>מתקדם – לא חובה, האתר לומד את הדוד לבד</summary>
