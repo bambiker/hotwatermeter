@@ -31,7 +31,10 @@
     morning: '07:00',
     evening: '19:00',
     kwhPrice: 0.6352, // ₪ per kWh, Israeli home tariff incl. VAT (July 2026) – for the savings card
-    accel: false,     // the tank has a heating accelerator: the element heats only its top part
+    accel: 'auto',    // a heating accelerator (the element heats only the top part): true / false / 'auto' = detect
+    accelFound: null, // what detection found: true / false / null = not enough data yet
+    accelEvidence: 0, // long boiler runs followed by 2+ showers seen at the last check
+    accelCheckedAt: null,
     accFrac: 0.35,    // …that part, as a share of the tank (learned; nobody needs to know the tank's size)
     effMonths: null,  // learned sun / element factor per past month (0 = the last 30 days), as of driftAt
     heatMonths: null,
@@ -40,12 +43,14 @@
   // Settings migrations. 2: tilted-collector irradiance with temperature-dependent losses, so
   // calibration learned under the old horizontal model starts again. 3: seasonal shower temperature.
   // 4: new temperature limits (thermostat 65, sun 80), applied only where the old defaults were kept.
-  const MODEL = 4;
+  // 5: the heating accelerator is detected by default (it was a yes/no checkbox for a day).
+  const MODEL = 5;
   const migration = (from, cur) => Object.assign({},
     (from ?? 0) < 2 ? { eff: DEFAULTS.eff, tin: null } : {},
     (from ?? 0) < 3 ? { tshower: null } : {},
     (from ?? 0) < 4 && (cur.heaterMax == null || cur.heaterMax === 60) ? { heaterMax: DEFAULTS.heaterMax } : {},
     (from ?? 0) < 4 && (cur.tankMax == null || cur.tankMax === 70) ? { tankMax: DEFAULTS.tankMax } : {},
+    (from ?? 0) < 5 && cur.accel !== true ? { accel: 'auto' } : {},
     { model: MODEL });
   const saved = store.get('hwm.tank', {});
   if (saved.model !== MODEL) Object.assign(saved, migration(saved.model, saved));
@@ -295,7 +300,8 @@
   // share f of it, learned), so there the model keeps two layers: showers take from the top and cold comes in
   // at the bottom – hot to the end, then cold quite suddenly – the element heats only the top, the sun and the
   // cooling act on both. t is what comes out of the tap. With f = 1 every formula is the one-volume one.
-  const accF = () => (cfg.accel ? Math.min(0.9, Math.max(0.1, cfg.accFrac)) : 1);
+  const accelOn = () => cfg.accel === true || (cfg.accel === 'auto' && cfg.accelFound === true);
+  const accF = () => (accelOn() ? Math.min(0.9, Math.max(0.1, cfg.accFrac)) : 1);
   const tank = (T) => ({ t: T, b: T });
   const stat = () => Math.min(cfg.heaterMax, cfg.tankMax);
   const elecPerMin = (heff = cfg.heaterEff) => cfg.heaterKw * heff * 60 / (cfg.liters * CP); // °C a minute, whole tank
@@ -572,7 +578,7 @@
     const elec = fam.boilers.some(b => runEnd(b, now) > wx.hours[0].start) ? monthly(drift.heat, DEFAULTS.heaterEff, 0.3, 2, 'elec') : [];
     knobs.push(...elec);
     // with an accelerator: how much of the tank its element heats (shows after long runs: more minutes stop helping)
-    const acc = cfg.accel && elec.length ? [knob(() => cfg.accFrac, v => { cfg.accFrac = v; }, DEFAULTS.accFrac, 0.1, 0.9, 'acc')] : [];
+    const acc = accelOn() && elec.length ? [knob(() => cfg.accFrac, v => { cfg.accFrac = v; }, DEFAULTS.accFrac, 0.1, 0.9, 'acc')] : [];
     knobs.push(...acc);
     for (const id of new Set(logs.map(l => l.member))) {
       const m = member(id);
@@ -605,6 +611,7 @@
         }
       }
     }
+    fitCost = best;
     cfg.eff = drift.eff[0];
     if (elec.length) cfg.heaterEff = drift.heat[0];
     const r3 = (arr) => arr.map(v => +v.toFixed(3));
@@ -1130,6 +1137,9 @@
       <button type="button" class="linkish" data-fault-ok="${f.kind}">הבנתי – להסתיר לשבועיים</button></p></section>`).join('');
   }
   document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-accel-ok]')) { store.set('hwm.accelSeen', true); render(); }
+  });
+  document.addEventListener('click', (e) => {
     const b = e.target.closest('[data-fault-ok]');
     if (!b) return;
     store.set('hwm.faultSeen.' + b.dataset.faultOk, Date.now());
@@ -1139,7 +1149,9 @@
   function renderTips(now) {
     const k = knowledge();
     const showKnow = !welcome.open && (k.n || k.named);
-    $('tips').innerHTML = faultsHtml(now) + timingTipHtml(now) + savingsHtml(now) + (showKnow ? `<section class="card know">
+    const accelTip = cfg.accel === 'auto' && cfg.accelFound === true && !store.get('hwm.accelSeen', false)
+      ? `<div class="tip-card"><span aria-hidden="true">🔍</span><p><b>זיהינו שכנראה יש בדוד שלכם מאיץ חימום</b> – הדוד החשמלי מחמם רק את החלק העליון, ואחרי שהוא חם עוד דקות כבר לא מוסיפות מקלחות. מעכשיו ההמלצות מתחשבות בזה. <a class="why" href="faq.html#accelerator">מה זה?</a> <button type="button" class="linkish" data-accel-ok>הבנתי</button></p></div>` : '';
+    $('tips').innerHTML = accelTip + faultsHtml(now) + timingTipHtml(now) + savingsHtml(now) + (showKnow ? `<section class="card know">
       <div class="know-h">האתר מכיר אתכם<span>${ltr(k.pct + '%')}</span></div>
       <div class="bar" role="img" aria-label="${k.pct}%"><i style="width:${k.pct}%"></i></div>
       <p class="note">${k.hint}</p>
@@ -1494,7 +1506,8 @@
         <label>שעת מקלחות בוקר<input data-cfg="morning" type="time" value="${cfg.morning}"></label>
         <label>שעת מקלחות ערב<input data-cfg="evening" type="time" value="${cfg.evening}"></label>
         <label>מחיר חשמל (₪ לקוט״ש, כולל מע״מ)<input data-cfg="kwhPrice" type="number" min="0.1" max="5" step="0.01" value="${cfg.kwhPrice}"></label>
-        <label class="chk"><input data-cfg="accel" type="checkbox" ${cfg.accel ? 'checked' : ''}> יש בדוד מאיץ חימום (הדוד החשמלי מחמם רק את החלק העליון)</label>
+        <label>מאיץ חימום (הדוד החשמלי מחמם רק את החלק העליון)<select data-cfg="accel">${[['auto', 'לא יודע – האתר יזהה לבד'], ['yes', 'יש'], ['no', 'אין']]
+          .map(([v, t]) => `<option value="${v}" ${(cfg.accel === true ? 'yes' : cfg.accel === false ? 'no' : 'auto') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       </div>
       ${learnedHtml()}
       <details class="adv">
@@ -1537,6 +1550,15 @@
     if (window.HWM && HWM.applyTab) HWM.applyTab();
   }
 
+  function accelNote() {
+    const share = `מחמם בערך את ה-${ltr(Math.round(accF() * 100) + '%')} העליונים של הדוד`;
+    if (cfg.accel === true) return `🔥 מאיץ חימום: סימנתם שיש – ${share} (נלמד מהמקלחות שאחרי הדלקות ארוכות).`;
+    if (cfg.accel === false) return '🔥 מאיץ חימום: סימנתם שאין.';
+    if (cfg.accelFound === true) return `🔍 האתר זיהה שכנראה יש בדוד <b>מאיץ חימום</b> – ${share}. <a href="faq.html#accelerator">מה זה?</a>`;
+    if (cfg.accelFound === false) return `🔍 אין סימנים למאיץ חימום בדוד (נבדק לפי ${ltr(cfg.accelEvidence)} ערבים עם הדלקה ארוכה). <a href="faq.html#accelerator">מה זה?</a>`;
+    return `🔍 האתר יבדוק לבד אם יש בדוד מאיץ חימום. לשם כך הוא צריך ${ltr(ACCEL_RUNS)} ערבים שבהם הדוד הודלק לפחות חצי שעה ואחר כך התקלחו שניים או יותר (עד עכשיו: ${ltr(Math.min(ACCEL_RUNS, accelEvidence(Date.now())))}). <a href="faq.html#accelerator">מה זה?</a>`;
+  }
+
   // What the learning found, month by month (100% = an average tank)
   function learnedHtml() {
     const at = cfg.driftAt || Date.now();
@@ -1551,7 +1573,7 @@
       <h3>🧠 מה האתר למד על הדוד</h3>
       <p class="note">כמה מהר הדוד שלכם מתחמם בכל חודש, ביחס לדוד ממוצע (<span dir="ltr">100%</span>). ירידה יכולה לרמז על קולטים מאובקים או אבנית בגוף החימום; עלייה – למשל אחרי גשם שניקה את הקולטים. כשבחודש האחרון החימום יורד בחמישית (20%) או יותר לעומת החודשים הקודמים, מופיעה התראה בלשונית "היום". <a href="faq.html#faults">איך זה עובד?</a></p>
       <table class="months"><thead><tr><th>תקופה</th><th>מהשמש</th>${elec ? '<th>מהדוד החשמלי</th>' : ''}</tr></thead><tbody>${rows}</tbody></table>
-      ${cfg.accel ? `<p class="note">🔥 מאיץ החימום מחמם בערך את ה-${ltr(Math.round(accF() * 100) + '%')} העליונים של הדוד (נלמד מהמקלחות שאחרי הדלקות ארוכות).</p>` : ''}
+      <p class="note">${accelNote()}</p>
       <p class="note">שמירת חום: חצי מהחום שמעל טמפ׳ האוויר נשאר בדוד אחרי כ-${ltr(Math.round(cfg.tau * Math.LN2))} שעות. כמה כל אחד צורך – בלשונית "משפחה".${cfg.effMonths ? '' : ' (הפירוט לפי חודשים יופיע אחרי הלמידה הבאה.)'}</p>
     </div>`;
   }
@@ -1752,6 +1774,7 @@
       const k = el.dataset.cfg;
       let v = null;
       if (el.type === 'checkbox') { commit([{ op: 'cfg', cfg: { [k]: el.checked } }]); return; }
+      if (k === 'accel') { commit([{ op: 'cfg', cfg: { accel: el.value === 'yes' ? true : el.value === 'no' ? false : 'auto' } }]); return; }
       if (k === 'morning' || k === 'evening') { if (el.value) v = el.value; }
       else if ((k === 'tin' || k === 'tshower') && el.value === '') { commit([{ op: 'cfg', cfg: { [k]: null } }]); return; }
       else if (el.value !== '' && isFinite(+el.value) && (+el.value > 0 || ['tin', 'azimuth', 'tilt', 'ul'].includes(k))) v = +el.value;
@@ -1853,14 +1876,49 @@
   // The learning runs after each logged shower; once a day it also runs on opening, so a change in the
   // weather data (more history, a new day) or in how it learns reaches the factors without waiting for a shower.
   const FIT_VERSION = 2;
+  // ---------- Is there a heating accelerator? Most people don't know, so the site checks ----------
+  // Its fingerprint: after a long boiler run, the second or third shower still runs out – more minutes stop
+  // helping once the top part is at the thermostat. With enough such evenings, both tanks are fitted to the
+  // same answers: one mixed volume, and two layers with the element heating the top. The accelerator is
+  // taken only when it explains them clearly better and heats a clear part of the tank – a tank without one
+  // still lies in layers, which helps the two-layer fit a little, with the element "heating" most of it
+  // (tested: accelerator 6.5–9.8 better with a share of 0.4–0.5; layered tank without one 3.6 with 0.63).
+  // Once decided it's checked again weekly, and dropped only when it no longer helps at all.
+  const ACCEL_RUNS = 4, ACCEL_GAIN = 5, ACCEL_MAX_SHARE = 0.6;
+  let fitCost = 0;
+  function accelEvidence(now) {
+    const logs = learnableLogs();
+    return fam.boilers.filter(b => runEnd(b, now) - b.t >= 30 * 60000 &&
+      logs.filter(l => l.t > b.t && l.t - runEnd(b, now) < 3 * HOUR).length >= 2).length;
+  }
+  function detectAccel() {
+    if (cfg.accel !== 'auto') return [];
+    const now = Date.now(), evidence = accelEvidence(now);
+    if (evidence < ACCEL_RUNS) return evidence !== cfg.accelEvidence ? [{ op: 'cfg', cfg: { accelEvidence: evidence } }] : [];
+    if (cfg.accelFound !== null && cfg.accelCheckedAt && now - cfg.accelCheckedAt < 7 * DAY) return [];
+    const keys = ['eff', 'tau', 'heaterEff', 'accFrac', 'effMonths', 'heatMonths', 'driftAt', 'accelFound'];
+    const take = () => ({ cfg: Object.fromEntries(keys.map(k => [k, cfg[k]])), liters: fam.members.map(m => [m.liters, m.n]) });
+    const put = (s) => { Object.assign(cfg, s.cfg); fam.members.forEach((m, i) => { [m.liters, m.n] = s.liters[i]; }); };
+    const start = take();
+    cfg.accelFound = false; const opsMixed = fit(), costMixed = fitCost, mixed = take();
+    put(start); cfg.accelFound = true; const opsAcc = fit(), costAcc = fitCost;
+    const found = costAcc < costMixed - (start.cfg.accelFound ? 0 : ACCEL_GAIN) && cfg.accFrac <= ACCEL_MAX_SHARE;
+    if (!found) put(mixed);
+    cfg.accelFound = found;
+    Object.assign(cfg, { accelEvidence: evidence, accelCheckedAt: now });
+    return [...(found ? opsAcc : opsMixed), { op: 'cfg', cfg: { accelFound: found, accelEvidence: evidence, accelCheckedAt: now } }];
+  }
+
   function refitOnce() {
     const key = FIT_VERSION + ':' + new Date().toISOString().slice(0, 10);
     if (!wx || store.get('hwm.refit', '') === key || !learnableLogs().length) return;
     store.set('hwm.refit', key);
     const snap = () => JSON.stringify([+cfg.eff.toFixed(3), +cfg.tau.toFixed(1), +cfg.heaterEff.toFixed(3), fam.members.map(m => m.liters == null ? null : Math.round(m.liters))]);
     const before = snap();
-    const ops = fit();
-    if (snap() !== before) commit(ops); else saveLocal();
+    const wasFound = cfg.accelFound;
+    const det = detectAccel();
+    const ops = det.some(o => o.cfg && 'accelFound' in o.cfg) ? det : [...fit(), ...det];
+    if (snap() !== before || cfg.accelFound !== wasFound) commit(ops); else saveLocal();
   }
   document.addEventListener('hwm:weather', (e) => onWeather(e.detail));
   if (window.HWM && HWM.weather) onWeather(HWM.weather);
