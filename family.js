@@ -31,6 +31,8 @@
     morning: '07:00',
     evening: '19:00',
     kwhPrice: 0.6352, // ₪ per kWh, Israeli home tariff incl. VAT (July 2026) – for the savings card
+    accel: false,     // the tank has a heating accelerator: the element heats only its top part
+    accFrac: 0.35,    // …that part, as a share of the tank (learned; nobody needs to know the tank's size)
     effMonths: null,  // learned sun / element factor per past month (0 = the last 30 days), as of driftAt
     heatMonths: null,
     driftAt: null
@@ -278,9 +280,6 @@
     return Math.round(Math.min(26, Math.max(12, air)));
   }
   const drawOf = (m) => need(m) * perLiter();
-  // How much shower-temperature water the tank can still give before it drops to shower temperature
-  // (used only for learning; cold water mixes in as hot is drawn, see perLiter)
-  const capacity = (T) => Math.max(0, (T - tsh()) / perLiter());
 
   const STEP = HOUR / 4;
   // A run logged as "until I switch it off" counts up to now, and at most this long if nobody does
@@ -290,6 +289,56 @@
   const overlap = (spans, a, b) => spans.reduce((sum, [x, y]) => sum + Math.max(0, Math.min(b, y) - Math.max(a, x)), 0);
   const activeRun = (now) => fam.boilers.find(b => b.t <= now && now < (b.min != null ? b.t + b.min * 60000 : b.t + MAX_OPEN));
 
+  // ---------- The tank: one mixed volume, or – with a heating accelerator – two layers ----------
+  // How many showers there are depends on the heat in the tank, so without an accelerator it's kept as one
+  // mixed volume: S = { t, b } with t = b. An accelerator's element heats only the top part of the tank (a
+  // share f of it, learned), so there the model keeps two layers: showers take from the top and cold comes in
+  // at the bottom – hot to the end, then cold quite suddenly – the element heats only the top, the sun and the
+  // cooling act on both. t is what comes out of the tap. With f = 1 every formula is the one-volume one.
+  const accF = () => (cfg.accel ? Math.min(0.9, Math.max(0.1, cfg.accFrac)) : 1);
+  const tank = (T) => ({ t: T, b: T });
+  const stat = () => Math.min(cfg.heaterMax, cfg.tankMax);
+  const elecPerMin = (heff = cfg.heaterEff) => cfg.heaterKw * heff * 60 / (cfg.liters * CP); // °C a minute, whole tank
+
+  // A shower of L liters at shower temperature: the tank after it, and the tap temperature at its start and end
+  function drawS(S, L) {
+    const f = accF(), ts = tsh(), ti = tin();
+    if (f >= 1) { const end = S.t - L * Math.max(1, ts - ti) / cfg.liters; return { S: tank(Math.max(ti, end)), start: S.t, end }; }
+    let t = S.t, b = S.b;
+    const top = f * cfg.liters, bottom = (1 - f) * cfg.liters, n = 10;
+    for (let k = 0; k < n; k++) { // in small parts: hot from the top, the bottom moves up, cold comes in below
+      const hot = t > ts ? (L / n) * Math.max(1, ts - ti) / Math.max(1, t - ti) : L / n;
+      const nt = t - Math.min(1, hot / top) * (t - b);
+      b = Math.max(ti, b - Math.min(1, hot / bottom) * (b - ti));
+      t = Math.max(ti, nt);
+    }
+    return { S: { t, b }, start: S.t, end: t };
+  }
+  // The element on for `min` minutes (the accelerator heats only the top, so the top warms faster)
+  function heatS(S, min, heff = cfg.heaterEff) {
+    const f = accF();
+    if (min <= 0 || S.t >= stat()) return S;
+    const t = Math.min(stat(), S.t + elecPerMin(heff) * min / f);
+    return f >= 1 ? tank(t) : { t, b: S.b };
+  }
+  // Minutes until the element's thermostat stops it
+  const minutesToStat = (S) => (S.t >= stat() ? 0 : Math.ceil((stat() - S.t) / (elecPerMin() / accF())));
+  // Boiler minutes for one shower of L liters to be hot to the end (capped: not even at the thermostat).
+  // With an accelerator there's a margin: the water goes cold suddenly there, so a shower planned to end
+  // exactly at shower temperature ends cold at the smallest error in the estimate. (Tested on a stratified
+  // tank: 30 of 36 promised showers hot instead of 25; in one mixed volume it gained 1 for 12% more boiler.)
+  const HEAT_MARGIN = 3; // °C, accelerator only
+  function minutesFor(S, L) {
+    const endAfter = (m) => drawS(heatS(S, m), L).end;
+    if (endAfter(0) >= tsh() - 0.05) return { min: 0, capped: false }; // hot enough without the boiler
+    const ok = (m) => endAfter(m) >= tsh() + (accF() < 1 ? HEAT_MARGIN : -0.05);
+    const max = minutesToStat(S);
+    if (!ok(max)) return { min: Math.max(1, max), capped: endAfter(max) < tsh() - 0.05 };
+    let lo = 0, hi = max;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (ok(mid)) hi = mid; else lo = mid; }
+    return { min: Math.max(1, hi), capped: false };
+  }
+
   // Useful heat from the collector over `hrs` hours, in °C of tank temperature. Flat-plate model:
   // optical gain minus a loss that grows with (tank − air), so cold days deliver less for the same sun.
   function solarGain(T, h, hrs, eff = cfg.eff) {
@@ -298,32 +347,46 @@
     return Math.min(q * 3600 * hrs / 1000 / (cfg.liters * CP), cfg.tankMax - T);
   }
 
-  // One step [a, b) inside weather hour h: solar gain, electric element (up to its thermostat), cooling
-  function step(T, h, a, b, spans, sun) {
-    const hrs = (b - a) / HOUR;
-    T += sun;
-    const on = overlap(spans, a, b) / HOUR;
-    const stat = Math.min(cfg.heaterMax, cfg.tankMax);
-    if (on > 0 && T < stat) T = Math.min(stat, T + cfg.heaterKw * cfg.heaterEff * 3600 * on / (cfg.liters * CP));
+  // One step of `hrs` hours inside weather hour h, the element on for onH of them: sun (the collector takes
+  // the bottom water), element (top only with an accelerator, up to its thermostat), cooling; returns the
+  // tank and the sun's share. k: the cooling factor, when the caller has it already.
+  function stepS(S, h, hrs, onH, eff = cfg.eff, heff = cfg.heaterEff, k = Math.exp(-hrs / cfg.tau)) {
+    const f = accF();
+    let t = S.t, b = f >= 1 ? S.t : S.b;
+    const sun = solarGain(b, h, hrs, eff);
+    t += sun; b += sun;
+    if (onH > 0 && t < stat()) t = Math.min(stat(), t + cfg.heaterKw * heff * 3600 * onH / (cfg.liters * CP) / f);
     const ta = h.ta ?? tin();
-    T = ta + (T - ta) * Math.exp(-hrs / cfg.tau);
-    return Math.min(T, cfg.tankMax);
+    t = Math.min(ta + (t - ta) * k, cfg.tankMax);
+    if (f >= 1) return { S: tank(t), sun };
+    b = Math.min(ta + (b - ta) * k, cfg.tankMax);
+    if (b > t) t = b = f * t + (1 - f) * b; // warmer water below rises: the layers mix
+    return { S: { t, b }, sun };
   }
+  function step(S, h, a, b, spans) { return stepS(S, h, (b - a) / HOUR, overlap(spans, a, b) / HOUR).S; }
 
-  // A logged shower also corrects the simulated state: the answer says where the tank was before the
-  // shower (relative to shower temp ts and this person's draw d), so the temperature is moved into
-  // that range first, and then the shower's draw is taken out – as it was in the real tank.
-  function applyLog(T, l) {
-    if (l.boiler) T = Math.max(T, cfg.heaterMax); // showers logged before boiler runs had their own log
-    const d = drawOf(member(l.member)), ts = tsh();
-    if (l.outcome === 'planned') return Math.max(T - d, tin()); // a what-if shower: nothing observed
-    const within = (lo, hi) => Math.min(hi, Math.max(lo, T));
-    if (l.outcome === 'plenty') T = within(ts + d + EDGE, Infinity);
-    else if (l.outcome === 'edge') T = within(ts + d, ts + d + EDGE);
-    else if (l.outcome === 'full') T = within(ts + d, Infinity);
-    else if (l.outcome === 'partial') T = within(ts, ts + d);
-    else T = within(-Infinity, ts);
-    return Math.max(T - d, tin());
+  // A logged shower also corrects the simulated state: the answer says where the tank was (at the tap, at the
+  // start and at the end of the shower), so the tank is first moved into that range – both layers alike – and
+  // then the shower is taken out, as it was in the real tank.
+  function applyLog(S, l) {
+    if (l.boiler) S = accF() >= 1 ? tank(Math.max(S.t, cfg.heaterMax)) : { t: Math.max(S.t, cfg.heaterMax), b: S.b }; // logged before boiler runs had their own log
+    const L = need(member(l.member)), ts = tsh();
+    if (l.outcome !== 'planned') { // a what-if shower: nothing observed
+      const [endLo, endHi, startLo, startHi] =
+        l.outcome === 'plenty' ? [ts + EDGE, Infinity, -Infinity, Infinity]
+        : l.outcome === 'edge' ? [ts, ts + EDGE, -Infinity, Infinity]
+        : l.outcome === 'full' ? [ts, Infinity, -Infinity, Infinity]
+        : l.outcome === 'partial' ? [-Infinity, ts, ts, Infinity]
+        : [-Infinity, Infinity, -Infinity, ts];
+      for (let it = 0; it < 2; it++) { // the end moves about as much as the tank (exactly, in one volume)
+        const D = drawS(S, L);
+        const lo = Math.max(endLo - D.end, startLo - D.start), hi = Math.min(endHi - D.end, startHi - D.start);
+        const sh = Math.min(hi, Math.max(lo, 0));
+        if (!sh) break;
+        S = accF() >= 1 ? tank(S.t + sh) : { t: S.t + sh, b: S.b + sh };
+      }
+    }
+    return drawS(S, L).S;
   }
 
   // Simulates in 15-minute steps; returns the tank temperature just before stopAt, the trace,
@@ -336,7 +399,7 @@
     const i0 = Math.max(0, H.findIndex(h => h.end > from));
     const spans = spansOf(now).filter(s => s[1] > H[i0].start);
     const logs = fam.logs.filter(l => l.t >= H[i0].start).concat(extra).sort((a, b) => a.t - b.t);
-    let T = (H[i0].ta ?? tin()) + 5, li = 0;
+    let S = tank((H[i0].ta ?? tin()) + 5), li = 0;
     const pts = [], byDay = {}, obs = [];
     const gainsByDate = () => Object.fromEntries(Object.entries(byDay).map(([k, g]) => [new Date(k * DAY).toISOString().slice(0, 10), g]));
     try {
@@ -345,30 +408,30 @@
       seasonAir = h.air;
       for (let a = h.start; a < h.end; a += STEP) {
         const b = a + STEP;
-        pts.push({ t: a, T });
+        pts.push({ t: a, T: S.t });
         while (li < logs.length && logs[li].t < b && logs[li].t < stopAt) {
           const l = logs[li++];
-          if (l.outcome === 'planned') { T = applyLog(T, l); continue; }
-          obs.push({ l, T });
-          T = applyLog(T, l);
-          pts.push({ t: l.t, T, log: l });
+          if (l.outcome === 'planned') { S = applyLog(S, l); continue; }
+          obs.push({ l, T: S.t });
+          S = applyLog(S, l);
+          pts.push({ t: l.t, T: S.t, log: l });
         }
         if (b > stopAt) {
           // the part of this step up to stopAt, so the tank moves minute by minute (a boiler switched on
           // 5 minutes ago shows already, not only once its 15-minute step is over)
-          if (stopAt > a) T = step(T, h, a, stopAt, spans, solarGain(T, h, (stopAt - a) / HOUR));
-          return { T, pts, gains: gainsByDate(), obs };
+          if (stopAt > a) S = step(S, h, a, stopAt, spans);
+          return { T: S.t, S, pts, gains: gainsByDate(), obs };
         }
-        const sun = solarGain(T, h, (b - a) / HOUR);
+        const r = stepS(S, h, (b - a) / HOUR, overlap(spans, a, b) / HOUR);
         const g = byDay[Math.floor((a + wx.off) / DAY)] ||= { total: 0, soFar: 0 };
-        g.total += sun;
-        if (b <= now) g.soFar += sun;
-        T = step(T, h, a, b, spans, sun);
+        g.total += r.sun;
+        if (b <= now) g.soFar += r.sun;
+        S = r.S;
       }
     }
     } finally { seasonAir = null; }
-    pts.push({ t: H[H.length - 1].end, T });
-    return { T, pts, gains: gainsByDate(), obs };
+    pts.push({ t: H[H.length - 1].end, T: S.t });
+    return { T: S.t, S, pts, gains: gainsByDate(), obs };
   }
 
   // ---------- Learning ----------
@@ -394,9 +457,10 @@
   //   full    – hot to the end (logged before the question): x > 0
   //   partial – ran out during the shower;  none – no hot water from the start
   const EDGE = 3;
-  function outcomeProbs(T, d) {
-    const x = T - d - tsh();
-    const full = cdf(x), plenty = cdf(x - EDGE), none = cdf(tsh() - T);
+  // start, end: the tap temperature at the start and at the end of the shower
+  function outcomeProbs(start, end) {
+    const x = end - tsh();
+    const full = cdf(x), plenty = cdf(x - EDGE), none = cdf(tsh() - start);
     return { full, plenty, edge: Math.max(1e-6, full - plenty), none, partial: Math.max(1e-6, 1 - full - none) };
   }
   // For the accuracy score the three main answers are compared: hot to the end / ran out / none
@@ -434,23 +498,19 @@
   // drift: per-month factors { eff: [], heat: [] } (index 0 = the last 30 days); without it, today's for all
   function tempsBeforeShowers(P, drift) {
     const H = wx.hours, logs = P.logs, out = [];
-    const decay = Math.exp(-0.25 / cfg.tau), stat = Math.min(cfg.heaterMax, cfg.tankMax);
-    const heat = cfg.heaterKw * 3600 / (cfg.liters * CP); // °C per hour of element at full strength
-    let T = 20, li = 0;
+    const decay = Math.exp(-0.25 / cfg.tau);
+    let S = tank(20), li = 0;
     try {
       for (let s = 0; s < P.n; s++) {
         const h = H[P.hi[s]];
         seasonAir = h.air;
-        if (P.reset[s]) T = (h.ta ?? tin()) + 5;
-        while (li < P.logEnd[s]) { out.push({ T, air: h.air }); T = applyLog(T, logs[li]); li++; }
+        if (P.reset[s]) S = tank((h.ta ?? tin()) + 5);
+        while (li < P.logEnd[s]) { out.push({ S, air: h.air }); S = applyLog(S, logs[li]); li++; }
         const b = P.blk[s];
-        T += solarGain(T, h, 0.25, drift ? drift.eff[b] : cfg.eff);
-        if (P.on[s] > 0 && T < stat) T = Math.min(stat, T + heat * (drift ? drift.heat[b] : cfg.heaterEff) * P.on[s]);
-        const ta = h.ta ?? tin();
-        T = Math.min(ta + (T - ta) * decay, cfg.tankMax);
+        S = stepS(S, h, 0.25, P.on[s], drift ? drift.eff[b] : cfg.eff, drift ? drift.heat[b] : cfg.heaterEff, decay).S;
       }
     } finally { seasonAir = null; }
-    while (out.length < logs.length) out.push({ T, air: airMean() });
+    while (out.length < logs.length) out.push({ S, air: airMean() });
     return out;
   }
 
@@ -470,7 +530,7 @@
   // probability of each logged answer under the current factors (with the season at the time of the shower)
   function probsAt(o, m) {
     seasonAir = o.air;
-    try { return outcomeProbs(o.T, drawOf(m)); } finally { seasonAir = null; }
+    try { const D = drawS(o.S, need(m)); return outcomeProbs(D.start, D.end); } finally { seasonAir = null; }
   }
 
   function negLogLik(P, now, drift) {
@@ -511,6 +571,9 @@
     const knobs = [...sun, knob(() => cfg.tau, v => { cfg.tau = v; }, DEFAULTS.tau, 10, 150)];
     const elec = fam.boilers.some(b => runEnd(b, now) > wx.hours[0].start) ? monthly(drift.heat, DEFAULTS.heaterEff, 0.3, 2, 'elec') : [];
     knobs.push(...elec);
+    // with an accelerator: how much of the tank its element heats (shows after long runs: more minutes stop helping)
+    const acc = cfg.accel && elec.length ? [knob(() => cfg.accFrac, v => { cfg.accFrac = v; }, DEFAULTS.accFrac, 0.1, 0.9, 'acc')] : [];
+    knobs.push(...acc);
     for (const id of new Set(logs.map(l => l.member))) {
       const m = member(id);
       if (m) knobs.push(knob(() => need(m), v => { m.liters = v; }, cfg.perPerson, 5, 250, 'use'));
@@ -519,6 +582,8 @@
     // together (every month's sun; sun + boiler heating; everyone's usage), or the search stalls where one compensates
     const moves = knobs.map(k => [k]);
     for (const ks of [sun, elec, [...sun, ...elec], knobs.filter(k => k.group === 'use')]) if (ks.length > 1) moves.push(ks);
+    // a bigger heated part with a stronger element warms the top at the same pace: try them together too
+    if (acc.length) moves.push([...acc, ...elec]);
     // the prior pulls today's values (and tau, and each person) toward the defaults; neighbouring months toward each other
     const smooth = (arr) => arr.reduce((s, v, b) => s + (b ? sq(Math.log(v / arr[b - 1])) : 0), 0);
     const cost = () => negLogLik(P, now, drift)
@@ -545,6 +610,7 @@
     const r3 = (arr) => arr.map(v => +v.toFixed(3));
     Object.assign(cfg, { effMonths: r3(drift.eff), heatMonths: r3(drift.heat), driftAt: now });
     const ops = [{ op: 'cfg', cfg: { eff: +cfg.eff.toFixed(3), tau: +cfg.tau.toFixed(1), heaterEff: +cfg.heaterEff.toFixed(3), effMonths: cfg.effMonths, heatMonths: cfg.heatMonths, driftAt: now } }];
+    if (acc.length) ops[0].cfg.accFrac = +cfg.accFrac.toFixed(2);
     for (const m of fam.members) {
       const n = logs.filter(l => l.member === m.id).length;
       if (n) ops.push({ op: 'member', m: { id: m.id, liters: Math.round(need(m)), n } });
@@ -595,29 +661,47 @@
   // ---------- Planning ----------
   // extra: what-if showers earlier in the day; away: members who won't shower in this slot
   function plan(t, slot, extra = [], away = new Set()) {
-    const T0 = run(t, extra).T;
-    let T = T0;
+    const S0 = run(t, extra).S, T0 = S0.t;
+    let S = S0;
     const who = fam.members.filter(m => !isGeneric(m) && (!m.skip || !m.skip[slot]) && !away.has(m.id));
     const rows = who.map(m => {
-      const d = drawOf(m);
-      const st = T - d >= tsh() - 0.05 ? 'ok' : T > tsh() ? 'partial' : 'cold';
-      T = Math.max(tin(), T - d);
+      const D = drawS(S, need(m));
+      const st = D.end >= tsh() - 0.05 ? 'ok' : D.start > tsh() ? 'partial' : 'cold';
+      S = D.S;
       return { m, st };
     });
-    const needT = tsh() + who.reduce((s, m) => s + drawOf(m), 0);
-    const target = Math.min(needT, Math.max(Math.min(cfg.heaterMax, cfg.tankMax), T0));
-    const minutes = T0 >= needT ? 0 : Math.ceil((target - T0) * cfg.liters * CP / 3600 / (cfg.heaterKw * cfg.heaterEff) * 60);
-    // how many of the list get a full hot shower once the tank is at `target`
-    let Th = target, withHeater = 0;
-    for (const m of who) { if (Th - drawOf(m) < tsh() - 0.05) break; Th -= drawOf(m); withHeater++; }
-    return { T0, rows, minutes, withHeater, total: who.length };
+    // boiler minutes before the first shower for everyone in a row, and how many that gives a full shower
+    const inRow = (min) => { let s = heatS(S0, min), n = 0; for (const m of who) { const D = drawS(s, need(m)); if (D.end < tsh() - 0.05) break; s = D.S; n++; } return n; };
+    let minutes, withHeater;
+    if (accF() >= 1) { // one volume: straight to the temperature everyone needs (or the thermostat)
+      const needT = tsh() + who.reduce((s, m) => s + drawOf(m), 0);
+      const target = Math.min(needT, Math.max(stat(), T0));
+      minutes = T0 >= needT ? 0 : Math.ceil((target - T0) / elecPerMin());
+      let Th = target; withHeater = 0;
+      for (const m of who) { if (Th - drawOf(m) < tsh() - 0.05) break; Th -= drawOf(m); withHeater++; }
+    } else { // accelerator: only the top heats, so more minutes stop helping once it reaches the thermostat
+      const max = minutesToStat(S0);
+      if (inRow(0) === who.length) { minutes = 0; withHeater = who.length; }
+      else if (inRow(max) < who.length) { minutes = max; withHeater = inRow(max); }
+      else {
+        let lo = 0, hi = max;
+        while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (inRow(mid) === who.length) hi = mid; else lo = mid; }
+        minutes = hi; withHeater = who.length;
+      }
+    }
+    return { T0, S0, rows, minutes, withHeater, total: who.length };
   }
 
   // Without names, showers are logged for one 'someone at home' – learned like a person, counted as "~N showers".
   // It's marked by its id (the shared sheet keeps only fixed member columns).
   const isGeneric = (m) => m.id.startsWith('gen');
   const generic = () => fam.members.find(isGeneric);
-  const anonShowers = (T) => Math.floor(capacity(T) / need(generic()));
+  function anonShowers(S) {
+    if (accF() >= 1) return Math.floor(Math.max(0, (S.t - tsh()) / perLiter()) / need(generic()));
+    let n = 0;
+    for (; n < 30; n++) { const D = drawS(S, need(generic())); if (D.end < tsh()) break; S = D.S; }
+    return n;
+  }
 
   // ---------- Showers tonight (the family's own measure: their tank, their people, the season) ----------
   // Who won't shower this evening (away, showered at the pool, back very late): set by tapping a name,
@@ -656,19 +740,22 @@
   // thermostat's maximum won't last them to the end.
   function heatEach(t, away, slot = 'evening') {
     const p = plan(t, slot, [], away);
-    const stat = Math.min(cfg.heaterMax, cfg.tankMax);
-    const perMin = cfg.heaterKw * cfg.heaterEff * 60 / (cfg.liters * CP); // °C per minute of boiler
-    let T = p.T0;
+    let S = p.S0;
     const rows = p.rows.map(r => {
-      const d = drawOf(r.m), want = tsh() + d;
-      let min = 0, capped = false;
-      if (T < want - 0.05) {
-        const target = Math.min(want, Math.max(stat, T));
-        min = Math.max(1, Math.ceil((target - T) / perMin));
-        capped = target < want - 0.05;
-        T = target;
+      if (accF() >= 1) { // one volume: heat to exactly what this person needs (or the thermostat)
+        const d = drawOf(r.m), need0 = tsh() + d;
+        let T = S.t, min = 0, capped = false;
+        if (T < need0 - 0.05) {
+          const target = Math.min(need0, Math.max(stat(), T));
+          min = Math.max(1, Math.ceil((target - T) / elecPerMin()));
+          capped = target < need0 - 0.05;
+          T = target;
+        }
+        S = tank(Math.max(tin(), T - d));
+        return Object.assign({}, r, { min, capped });
       }
-      T = Math.max(tin(), T - d);
+      const { min, capped } = minutesFor(S, need(r.m));
+      S = drawS(heatS(S, min), need(r.m)).S;
       return Object.assign({}, r, { min, capped });
     });
     return { p, rows, total: rows.reduce((s, r) => s + r.min, 0) };
@@ -682,16 +769,13 @@
   function heatThrough(he) {
     const rows = he.rows;
     if (rows.filter(r => r.min).length < 2) return null; // worth it only when several need the boiler
-    const stat = Math.min(cfg.heaterMax, cfg.tankMax);
-    const perMin = cfg.heaterKw * cfg.heaterEff * 60 / (cfg.liters * CP);
     const showerMin = rows.reduce((s, r) => s + need(r.m) / FLOW, 0);
     const ok = (lead) => {
-      let T = he.p.T0 < stat ? Math.min(stat, he.p.T0 + lead * perMin) : he.p.T0;
+      let S = heatS(he.p.S0, lead);
       for (const r of rows) {
-        const gain = need(r.m) / FLOW * perMin, d = drawOf(r.m);
-        const end = Math.min(Math.max(T, stat), T + gain) - d; // the element stops at the thermostat
-        if (end < tsh() - 0.05) return false;
-        T = Math.max(tin(), end);
+        const D = drawS(heatS(S, need(r.m) / FLOW), need(r.m)); // heating on during the shower, up to the thermostat
+        if (D.end < tsh() - 0.05) return false;
+        S = D.S;
       }
       return true;
     };
@@ -711,7 +795,7 @@
       if (time < wx.hours[0].start || time > wx.hours[wx.hours.length - 1].end) return null;
       const p = plan(time, slot, [], away);
       if (p.total || (away && away.size && slotPeople(slot).length)) return { ok: p.rows.filter(r => r.st === 'ok').length, total: p.total };
-      return { n: anonShowers(p.T0) }; // nobody listed: showers of the default (or learned 'someone') size
+      return { n: anonShowers(p.S0) }; // nobody listed: showers of the default (or learned 'someone') size
     };
     const tonight = at(t, away), yday = at(t - DAY), tmrw = at(t + DAY);
     const say = (x) => x.total != null ? `${ltr(x.ok)} מתוך ${ltr(x.total)}` : `~${ltr(x.n)} מקלחות`;
@@ -740,7 +824,7 @@
       const extra = moves.map(mv => ({ t: mv.t, member: mv.m.id, outcome: 'planned' }));
       const p = plan(tEve, 'evening', extra, new Set([...away, ...moves.map(mv => mv.m.id)]));
       // each moved person needs a hot shower at their hour too
-      const middayOk = moves.filter(mv => run(mv.t, extra.filter(e => e.t < mv.t)).T - drawOf(mv.m) >= tsh() - 0.05).length;
+      const middayOk = moves.filter(mv => drawS(run(mv.t, extra.filter(e => e.t < mv.t)).S, need(mv.m)).end >= tsh() - 0.05).length;
       return { hot: ok(p) + middayOk, middayOk, moves };
     };
     const candidates = base.rows.map(r => r.m);
@@ -842,13 +926,20 @@
   // A thermometer for each answer: how much hot water was left at the end
   const thermo = (color, level) => `<svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><circle cx="17" cy="17" r="16" style="fill:color-mix(in srgb, ${color} 16%, var(--surface))"/><rect x="14" y="6" width="6" height="17" rx="3" fill="none" stroke="${color}" stroke-width="2"/><circle cx="17" cy="25" r="4" fill="${color}"/>${level ? `<rect x="16" y="${23 - level}" width="2" height="${level}" fill="${color}"/>` : ''}</svg>`;
   // The tank, filled and coloured by its temperature
-  function tankSvg(T) {
+  // (S: with an accelerator, the two layers – the top coloured by its temperature, the bottom by its own)
+  function tankSvg(T, S) {
     const f = Math.max(0.08, Math.min(1, (T - tin()) / (Math.max(cfg.heaterMax, 65) - tin())));
-    const col = T < tsh() ? 'var(--accent)' : T < tsh() + 10 ? 'var(--mid)' : 'var(--hot)';
-    return `<svg class="tank" viewBox="0 0 64 112" role="img" aria-label="הדוד עכשיו בערך ${Math.round(T)} מעלות">
+    const colOf = (x) => x < tsh() ? 'var(--accent)' : x < tsh() + 10 ? 'var(--mid)' : 'var(--hot)';
+    const col = colOf(T), af = accF();
+    const fill = S && af < 1
+      ? `<rect x="8" y="4" width="48" height="${(104 * af).toFixed(1)}" fill="${colOf(S.t)}" clip-path="url(#tankClip)"/>
+         <rect x="8" y="${(4 + 104 * af).toFixed(1)}" width="48" height="${(104 * (1 - af)).toFixed(1)}" fill="${colOf(S.b)}" opacity=".55" clip-path="url(#tankClip)"/>
+         <text x="32" y="${Math.min(100, 4 + 104 * af + 24).toFixed(0)}" text-anchor="middle" font-size="12" font-weight="700" fill="var(--ink)" stroke="var(--surface)" stroke-width="3" paint-order="stroke">${Math.round(S.b)}°</text>`
+      : `<rect x="8" y="${(4 + 104 * (1 - f)).toFixed(1)}" width="48" height="${(104 * f).toFixed(1)}" fill="${col}" clip-path="url(#tankClip)"/>`;
+    return `<svg class="tank" viewBox="0 0 64 112" role="img" aria-label="הדוד עכשיו בערך ${Math.round(T)} מעלות${S && af < 1 ? `, בחלק התחתון ${Math.round(S.b)}` : ''}">
       <defs><clipPath id="tankClip"><rect x="8" y="4" width="48" height="104" rx="24"/></clipPath></defs>
       <rect x="8" y="4" width="48" height="104" rx="24" fill="var(--bg)"/>
-      <rect x="8" y="${(4 + 104 * (1 - f)).toFixed(1)}" width="48" height="${(104 * f).toFixed(1)}" fill="${col}" clip-path="url(#tankClip)"/>
+      ${fill}
       <rect x="8" y="4" width="48" height="104" rx="24" fill="none" stroke="var(--line)" stroke-width="2"/>
       <text x="32" y="38" text-anchor="middle" font-size="17" font-weight="800" fill="var(--ink)" stroke="var(--surface)" stroke-width="3" paint-order="stroke">${Math.round(T)}°</text>
     </svg>`;
@@ -870,7 +961,7 @@
 
   // What to do about the boiler for a slot's plan (running: the boiler is on right now)
   function adviceHtml(p, running) {
-    return !p.rows.length ? `<p class="note">בערך ${ltr(anonShowers(p.T0))} מקלחות חמות ברצף</p>`
+    return !p.rows.length ? `<p class="note">בערך ${ltr(anonShowers(p.S0))} מקלחות חמות ברצף</p>`
       : p.minutes === 0 ? `<p class="advice ok">✅ ${running ? 'אפשר לכבות את הדוד' : 'אין צורך להדליק דוד'}</p>`
       : running && p.minutes >= 3 ? `<p class="advice warn">🔥 הדוד דלוק – צריך עוד כ-${ltr(p.minutes)} דקות${p.withHeater < p.total ? ` (יספיק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף)${why('heat-each-or-all')}` : why('how-long')}</p>`
       : p.minutes < 3 ? `<p class="advice warn">⚠️ הדוד כבר חם, אבל יספיק רק ל-${ltr(p.withHeater)} מתוך ${ltr(p.total)} ברצף – כדאי לפזר את המקלחות${why('heat-each-or-all')}</p>`
@@ -947,7 +1038,7 @@
 
   // ---------- At a glance: the answer first, before the charts ----------
   // The tank now, and who tonight's showers are enough for – the one question people come with
-  function renderHero(now, cur, sh, sunToday) {
+  function renderHero(now, cur, sh, sunToday, curS) {
     const box = $('summary');
     if (!sh.tonight) { box.innerHTML = ''; return; }
     const when = sh.isNow ? 'עכשיו' : 'הערב';
@@ -961,8 +1052,7 @@
       const all = tn.ok === tn.total;
       if (!tn.total) {
         // nobody left to shower: say so, and what's still in the tank for anyone who wants one after all
-        const n = anonShowers(he.p.T0), perMin = cfg.heaterKw * cfg.heaterEff * 60 / (cfg.liters * CP);
-        const mins = Math.ceil(Math.max(0, tsh() + drawOf(null) - he.p.T0) / perMin);
+        const n = anonShowers(he.p.S0), mins = minutesFor(he.p.S0, need(null)).min;
         head = `<div class="k">${when} (${ltr(hhmm(sh.t))})</div>
           <div class="big">${sh.done.size ? 'כולם כבר התקלחו' : 'אף אחד לא מתקלח'}</div>
           <p class="note">${n ? `בדוד נשאר מספיק לעוד ~${ltr(n)} ${n === 1 ? 'מקלחת' : 'מקלחות'} בלי דוד` : `למקלחת נוספת צריך להדליק דוד כ-${ltr(mins)} דקות`}</p>`;
@@ -992,16 +1082,16 @@
     const strip = [sh.yday && `אתמול${sh.isNow ? ' באותה שעה' : ''}: ${sh.say(sh.yday)}`, sh.tmrw && `מחר${sh.isNow ? ' באותה שעה' : ''}: ${sh.say(sh.tmrw)}`].filter(Boolean).join(' · ');
     box.innerHTML = `<section class="card hero">
       <div class="hero-top">
-        ${tankSvg(cur)}
+        ${tankSvg(cur, curS)}
         <div>${head}</div>
       </div>
       ${sunLeft >= 1 ? `<p class="note">☀️ הדוד עוד יתחמם מהשמש בכ-${ltr('+' + Math.round(sunLeft) + '°')} עד הערב</p>` : ''}
       ${(() => {
         const on = activeRun(now);
         if (!on) return '';
-        const perHour = cfg.heaterKw * cfg.heaterEff * 3600 / (cfg.liters * CP);
+        const perHour = elecPerMin() * 60 / accF(); // with an accelerator: the top part
         const stat = Math.min(cfg.heaterMax, cfg.tankMax);
-        return `<p class="advice warn">🔥 הדוד דלוק מאז ${ltr(hhmm(on.t))}${on.min != null ? ` (עד ${ltr(hhmm(on.t + on.min * 60000))})` : ''} – מחמם בכ-${ltr(fmt(perHour, 0) + '°')} לשעה${cur >= stat - 0.5 ? `, והגיע לטרמוסטט (${ltr(stat + '°')})` : ''}.</p>`;
+        return `<p class="advice warn">🔥 הדוד דלוק מאז ${ltr(hhmm(on.t))}${on.min != null ? ` (עד ${ltr(hhmm(on.t + on.min * 60000))})` : ''} – מחמם ${accF() < 1 ? 'את החלק העליון ' : ''}בכ-${ltr(fmt(perHour, 0) + '°')} לשעה${cur >= stat - 0.5 ? `, והגיע לטרמוסטט (${ltr(stat + '°')})` : ''}.</p>`;
       })()}
       ${body}
       ${learnableLogs().length < 3 ? '<p class="note">זו הערכה כללית לדוד ממוצע – עוד לא מכירים את הבית שלכם.</p>' : ''}
@@ -1174,7 +1264,7 @@
       const away = new Set(fam.logs.filter(l => l.t <= at && at - l.t < 4 * HOUR).map(l => l.member));
       const p = plan(at, 'evening', [], away);
       const ok = p.rows.filter(r => r.st === 'ok').length;
-      left = `<p>מה נשאר עכשיו: ${p.total ? `יספיק ל-<b>${ltr(ok)} מתוך ${ltr(p.total)}</b> שעוד לא התקלחו` : anonShowers(p.T0) ? `יספיק לעוד <b>~${ltr(anonShowers(p.T0))} מקלחות</b>` : '<b>אין עוד מים חמים</b> בלי להדליק דוד'}.</p>`;
+      left = `<p>מה נשאר עכשיו: ${p.total ? `יספיק ל-<b>${ltr(ok)} מתוך ${ltr(p.total)}</b> שעוד לא התקלחו` : anonShowers(p.S0) ? `יספיק לעוד <b>~${ltr(anonShowers(p.S0))} מקלחות</b>` : '<b>אין עוד מים חמים</b> בלי להדליק דוד'}.</p>`;
     }
     return `<div class="done-ic"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
       <div class="done-h"><h2>נרשם, תודה!</h2><p class="note">${esc(d.name)} · ${dayWord(d.t, now)} ${ltr(hhmm(d.t))} · ${OUT[d.outcome].t}</p></div>
@@ -1275,7 +1365,7 @@
     renderActions(Date.now());
     if (!wx) { root.innerHTML = ''; ['summary', 'tips', 'tankSlot'].forEach(id => { $(id).innerHTML = ''; }); placeHome(); return; }
     const now = Date.now();
-    const cur = run(now).T;
+    const nowRun = run(now), cur = nowRun.T, curS = nowRun.S;
     const morning = nextAt(cfg.morning, now);
     const evening = nextAt(cfg.evening, now);
     const slots = [['עכשיו', now, 'now'], ['בוקר', morning, 'morning'], ['ערב', evening, 'evening']]
@@ -1288,7 +1378,7 @@
     const mins = (b) => Math.round((runEnd(b, now) - b.t) / 60000);
     const sh = showersTonight(now);
     const sunToday = run().gains[localStr(now).slice(0, 10)];
-    renderHero(now, cur, sh, sunToday);
+    renderHero(now, cur, sh, sunToday, curS);
     renderTips(now);
 
     // the tank over the day goes with the other charts, under "details"
@@ -1404,6 +1494,7 @@
         <label>שעת מקלחות בוקר<input data-cfg="morning" type="time" value="${cfg.morning}"></label>
         <label>שעת מקלחות ערב<input data-cfg="evening" type="time" value="${cfg.evening}"></label>
         <label>מחיר חשמל (₪ לקוט״ש, כולל מע״מ)<input data-cfg="kwhPrice" type="number" min="0.1" max="5" step="0.01" value="${cfg.kwhPrice}"></label>
+        <label class="chk"><input data-cfg="accel" type="checkbox" ${cfg.accel ? 'checked' : ''}> יש בדוד מאיץ חימום (הדוד החשמלי מחמם רק את החלק העליון)</label>
       </div>
       ${learnedHtml()}
       <details class="adv">
@@ -1460,6 +1551,7 @@
       <h3>🧠 מה האתר למד על הדוד</h3>
       <p class="note">כמה מהר הדוד שלכם מתחמם בכל חודש, ביחס לדוד ממוצע (<span dir="ltr">100%</span>). ירידה יכולה לרמז על קולטים מאובקים או אבנית בגוף החימום; עלייה – למשל אחרי גשם שניקה את הקולטים. כשבחודש האחרון החימום יורד בחמישית (20%) או יותר לעומת החודשים הקודמים, מופיעה התראה בלשונית "היום". <a href="faq.html#faults">איך זה עובד?</a></p>
       <table class="months"><thead><tr><th>תקופה</th><th>מהשמש</th>${elec ? '<th>מהדוד החשמלי</th>' : ''}</tr></thead><tbody>${rows}</tbody></table>
+      ${cfg.accel ? `<p class="note">🔥 מאיץ החימום מחמם בערך את ה-${ltr(Math.round(accF() * 100) + '%')} העליונים של הדוד (נלמד מהמקלחות שאחרי הדלקות ארוכות).</p>` : ''}
       <p class="note">שמירת חום: חצי מהחום שמעל טמפ׳ האוויר נשאר בדוד אחרי כ-${ltr(Math.round(cfg.tau * Math.LN2))} שעות. כמה כל אחד צורך – בלשונית "משפחה".${cfg.effMonths ? '' : ' (הפירוט לפי חודשים יופיע אחרי הלמידה הבאה.)'}</p>
     </div>`;
   }
@@ -1659,6 +1751,7 @@
     if (el.dataset.cfg) {
       const k = el.dataset.cfg;
       let v = null;
+      if (el.type === 'checkbox') { commit([{ op: 'cfg', cfg: { [k]: el.checked } }]); return; }
       if (k === 'morning' || k === 'evening') { if (el.value) v = el.value; }
       else if ((k === 'tin' || k === 'tshower') && el.value === '') { commit([{ op: 'cfg', cfg: { [k]: null } }]); return; }
       else if (el.value !== '' && isFinite(+el.value) && (+el.value > 0 || ['tin', 'azimuth', 'tilt', 'ul'].includes(k))) v = +el.value;
