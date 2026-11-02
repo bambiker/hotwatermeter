@@ -1010,10 +1010,46 @@
   }
 
   // A tip for today, and how well the site knows this home by now
+  // ---------- Fault check: is the tank heating slower than it used to? ----------
+  // Compares this month's learned factor (sun, and electric element) with the months before that had
+  // enough data of their own. A drop of a fifth or more is worth a look: dusty or shaded collectors,
+  // air or a leak in the loop, a pump; scale on the element or a failing element / thermostat.
+  const FAULT_DROP = 0.8; // the monthly smoothing softens a real drop (40% shows as ~27%), so a fifth is enough
+  function faults(now) {
+    if (!cfg.effMonths || !cfg.driftAt) return [];
+    const blockOf = (t) => Math.floor((cfg.driftAt - t) / BLOCK);
+    const count = (items, b) => items.filter(t => t <= cfg.driftAt && blockOf(t) === b).length;
+    const showers = fam.logs.filter(l => !l.boiler && l.outcome !== 'planned').map(l => l.t), runs = fam.boilers.map(r => r.t);
+    const check = (kind, months, times, need) => {
+      if (!months || months.length < 2 || count(times, 0) < need) return null;
+      const before = months.map((v, b) => ({ v, b })).filter(x => x.b > 0 && count(times, x.b) >= need).slice(0, 3).map(x => x.v);
+      if (before.length < 2) return null;
+      const typical = before.slice().sort((a, b) => a - b)[Math.floor(before.length / 2)];
+      const ratio = months[0] / typical;
+      return ratio < FAULT_DROP ? { kind, drop: Math.round((1 - ratio) * 100) } : null;
+    };
+    return [check('sun', cfg.effMonths, showers, 8), check('elec', cfg.heatMonths, runs, 3)].filter(Boolean)
+      .filter(f => (store.get('hwm.faultSeen.' + f.kind, 0) || 0) < now - 14 * DAY);
+  }
+  function faultsHtml(now) {
+    return faults(now).map(f => `<section class="card fault"><p>${f.kind === 'sun'
+      ? `⚠️ <b>הדוד מתחמם מהשמש בכ-${ltr(f.drop + '%')} פחות מבחודשים הקודמים.</b> כדאי לבדוק: אבק או לכלוך על הקולטים, הצללה חדשה (עץ, בניין, דוד של שכן), אוויר או דליפה בצנרת, ובבניין – את המשאבה והבקר.`
+      : `⚠️ <b>הדוד החשמלי מחמם בכ-${ltr(f.drop + '%')} לאט יותר מבחודשים הקודמים.</b> ייתכן שהצטברה אבנית על גוף החימום, שגוף החימום או הטרמוסטט התקלקלו בחלקם, או שמישהו שינה את הכיוון של הטרמוסטט – כדאי לבדוק עם טכנאי.`}
+      <a class="why" href="faq.html#faults">עוד על זה</a></p>
+      <p class="note">לפני שמזמינים טכנאי: ודאו שכל ההדלקות נרשמו (ושנלחץ "כיביתי"), ושלא השתנה משהו בבית – יותר אנשים, מקלחות ארוכות יותר.
+      <button type="button" class="linkish" data-fault-ok="${f.kind}">הבנתי – להסתיר לשבועיים</button></p></section>`).join('');
+  }
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-fault-ok]');
+    if (!b) return;
+    store.set('hwm.faultSeen.' + b.dataset.faultOk, Date.now());
+    render();
+  });
+
   function renderTips(now) {
     const k = knowledge();
     const showKnow = !welcome.open && (k.n || k.named);
-    $('tips').innerHTML = timingTipHtml(now) + savingsHtml(now) + (showKnow ? `<section class="card know">
+    $('tips').innerHTML = faultsHtml(now) + timingTipHtml(now) + savingsHtml(now) + (showKnow ? `<section class="card know">
       <div class="know-h">האתר מכיר אתכם<span>${ltr(k.pct + '%')}</span></div>
       <div class="bar" role="img" aria-label="${k.pct}%"><i style="width:${k.pct}%"></i></div>
       <p class="note">${k.hint}</p>
@@ -1422,7 +1458,7 @@
       <td>${bar(e / DEFAULTS.eff)}</td>${elec ? `<td>${bar((heat[b] ?? heat[heat.length - 1]) / DEFAULTS.heaterEff)}</td>` : ''}</tr>`).join('');
     return `<div class="learned-box">
       <h3>🧠 מה האתר למד על הדוד</h3>
-      <p class="note">כמה מהר הדוד שלכם מתחמם בכל חודש, ביחס לדוד ממוצע (<span dir="ltr">100%</span>). ירידה יכולה לרמז על קולטים מאובקים או אבנית בגוף החימום; עלייה – למשל אחרי גשם שניקה את הקולטים.</p>
+      <p class="note">כמה מהר הדוד שלכם מתחמם בכל חודש, ביחס לדוד ממוצע (<span dir="ltr">100%</span>). ירידה יכולה לרמז על קולטים מאובקים או אבנית בגוף החימום; עלייה – למשל אחרי גשם שניקה את הקולטים. כשבחודש האחרון החימום יורד בחמישית (20%) או יותר לעומת החודשים הקודמים, מופיעה התראה בלשונית "היום". <a href="faq.html#faults">איך זה עובד?</a></p>
       <table class="months"><thead><tr><th>תקופה</th><th>מהשמש</th>${elec ? '<th>מהדוד החשמלי</th>' : ''}</tr></thead><tbody>${rows}</tbody></table>
       <p class="note">שמירת חום: חצי מהחום שמעל טמפ׳ האוויר נשאר בדוד אחרי כ-${ltr(Math.round(cfg.tau * Math.LN2))} שעות. כמה כל אחד צורך – בלשונית "משפחה".${cfg.effMonths ? '' : ' (הפירוט לפי חודשים יופיע אחרי הלמידה הבאה.)'}</p>
     </div>`;
