@@ -1,6 +1,6 @@
 {
-  "name": "מד מים חמים",
-  "short_name": "מים חמים",
+  "name": "מד דוד שמש",
+  "short_name": "דוד שמש",
   "lang": "he",
   "dir": "rtl",
   "start_url": "./",
@@ -24,7 +24,7 @@
   "description": "כמה מקלחות חמות יהיו הערב בדוד השמש? מחשבון חינמי לפי השמש והעננים אצלכם: כמה דקות להדליק את הדוד החשמלי, מתי הכי כדאי להתקלח – ולומד את הדוד והמשפחה שלכם.",
   "id": "./",
   "related_applications": [
-    { "platform": "webapp", "url": "https://bambiker.github.io/hotwatermeter/manifest.webmanifest" }
+    { "platform": "webapp", "url": "https://bambiker.github.io/solarwatermeter/manifest.webmanifest" }
   ],
   "scope": "./"
 }

@@ -12,16 +12,16 @@
 </script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>מתי להדליק את הדוד? מחשבון דוד שמש לפי מזג האוויר | מד מים חמים</title>
+<title>מתי להדליק את הדוד? מחשבון דוד שמש לפי מזג האוויר | מד דוד שמש</title>
 <meta name="description" content="כמה מקלחות חמות יהיו הערב בדוד השמש? מחשבון חינמי לפי השמש והעננים אצלכם: כמה דקות להדליק את הדוד החשמלי, מתי הכי כדאי להתקלח – ולומד את הדוד והמשפחה שלכם.">
-<link rel="canonical" href="https://bambiker.github.io/hotwatermeter/">
+<link rel="canonical" href="https://bambiker.github.io/solarwatermeter/">
 <meta property="og:type" content="website">
 <meta property="og:locale" content="he_IL">
-<meta property="og:site_name" content="מד מים חמים">
-<meta property="og:title" content="מתי להדליק את הדוד? מחשבון דוד שמש לפי מזג האוויר | מד מים חמים">
+<meta property="og:site_name" content="מד דוד שמש">
+<meta property="og:title" content="מתי להדליק את הדוד? מחשבון דוד שמש לפי מזג האוויר | מד דוד שמש">
 <meta property="og:description" content="כמה מקלחות חמות יהיו הערב בדוד השמש? מחשבון חינמי לפי השמש והעננים אצלכם: כמה דקות להדליק את הדוד החשמלי, מתי הכי כדאי להתקלח – ולומד את הדוד והמשפחה שלכם.">
-<meta property="og:url" content="https://bambiker.github.io/hotwatermeter/">
-<meta property="og:image" content="https://bambiker.github.io/hotwatermeter/og-image.png">
+<meta property="og:url" content="https://bambiker.github.io/solarwatermeter/">
+<meta property="og:image" content="https://bambiker.github.io/solarwatermeter/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
@@ -322,8 +322,8 @@
 {
  "@context": "https://schema.org",
  "@type": "WebApplication",
- "name": "מד מים חמים",
- "url": "https://bambiker.github.io/hotwatermeter/",
+ "name": "מד דוד שמש",
+ "url": "https://bambiker.github.io/solarwatermeter/",
  "inLanguage": "he",
  "applicationCategory": "UtilitiesApplication",
  "operatingSystem": "Any",
@@ -338,7 +338,7 @@
 </head>
 <body data-tab="today">
 <main>
-  <h1><img src="logo.svg" alt="" class="logo">מד מים חמים<button type="button" id="install" class="install" hidden>📲 התקנה</button></h1>
+  <h1><img src="logo.svg" alt="" class="logo">מד דוד שמש<button type="button" id="install" class="install" hidden>📲 התקנה</button></h1>
   <div id="installHelp" class="card install-help" hidden></div>
   <p class="sub" data-pane="today">האתר בודק כמה שמש הייתה היום, ומכך מסיק לכמה אנשים יספיק דוד השמש.<br>ככל שתשתמשו באתר יותר, הוא יכיר אתכם יותר וידייק את התחזית שלו.<br><a href="faq.html">שאלות ותשובות ❓</a></p>
 
@@ -385,7 +385,7 @@
 
   <section class="about" data-pane="today">
     <h2>מחשבון דוד שמש: כמה מים חמים יהיו הערב?</h2>
-    <p>מד מים חמים בודק את תחזית השמש והעננים במקום שלכם (נתוני <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>), ומעריך כמה הדוד מתחמם היום ולכמה מקלחות חמות הוא יספיק הערב – בלי להדליק את הדוד החשמלי.</p>
+    <p>מד דוד שמש בודק את תחזית השמש והעננים במקום שלכם (נתוני <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>), ומעריך כמה הדוד מתחמם היום ולכמה מקלחות חמות הוא יספיק הערב – בלי להדליק את הדוד החשמלי.</p>
     <ul>
       <li><b>מתי להדליק את הדוד וכמה זמן</b> – אם הערב לא יספיק לכולם, האתר אומר כמה דקות להדליק לפני המקלחות.</li>
       <li><b>מתי הכי כדאי להתקלח</b> – כשעוד יש שמש, מקלחת במהלך היום משאירה זמן לשמש לחמם את הדוד מחדש עד הערב.</li>
@@ -807,7 +807,7 @@
   (() => {
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
     const btn = document.getElementById('install'), help = document.getElementById('installHelp');
-    const KEY = 'hwm.installed';
+    const KEY = 'hwm.installed:' + location.pathname.replace(/[^/]*$/, ''); // per address: sites on one github.io share storage
     const mark = () => { try { localStorage.setItem(KEY, '1'); } catch {} };
     const hide = () => { btn.hidden = true; help.hidden = true; };
     if (matchMedia('(display-mode: standalone)').matches || navigator.standalone) { mark(); return; } // this is the app
@@ -838,7 +838,7 @@
   })();
 </script>
 <!-- ?v= changes with each release, so a phone never pairs a new page with an old cached script -->
-<script src="config.js?v=20261029a"></script>
-<script src="family.js?v=20261029a"></script>
+<script src="config.js?v=20261102a"></script>
+<script src="family.js?v=20261102a"></script>
 </body>
 </html>
