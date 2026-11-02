@@ -134,7 +134,7 @@ function contact_(b) {
 
   const to = props.getProperty('CONTACT_EMAIL') || Session.getEffectiveUser().getEmail();
   const opts = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? { replyTo: email } : {};
-  MailApp.sendEmail(to, 'מד מים חמים – הודעה חדשה' + (name ? ' מ' + name : ''),
+  MailApp.sendEmail(to, 'מד דוד שמש – הודעה חדשה' + (name ? ' מ' + name : ''),
     message + '\n\n—\n' + (name || 'בלי שם') + (email ? ' · ' + email : ' · בלי מייל לחזרה'), opts);
   return { ok: true };
 }
@@ -151,7 +151,7 @@ function createFamily_(name) {
   const f = 'f' + Utilities.getUuid().replace(/-/g, '').slice(0, 12);
   const key = Utilities.getUuid().replace(/-/g, '').slice(0, 20);
   const label = String(name || '').trim().slice(0, 40);
-  const ss = SpreadsheetApp.create('מד מים חמים – ' + (label || f));
+  const ss = SpreadsheetApp.create('מד דוד שמש – ' + (label || f));
   const blank = ss.getSheets()[0];
   Object.keys(TABLES).forEach(t => sheet_(ss, t));
   ss.deleteSheet(blank);

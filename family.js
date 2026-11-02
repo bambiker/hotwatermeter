@@ -1352,7 +1352,7 @@
         <details class="adv" ${HOSTED_URL ? '' : 'open'}>
           <summary>${HOSTED_URL ? 'מתקדם: ' : ''}שרת משלכם (גיליון Google בבעלותכם)</summary>
           <p class="note">הקמה חד-פעמית של כ-5 דקות:
-            <a href="https://github.com/bambiker/hotwatermeter/blob/main/apps-script/README.md" target="_blank" rel="noopener">הוראות הקמה</a>.</p>
+            <a href="https://github.com/bambiker/solarwatermeter/blob/main/apps-script/README.md" target="_blank" rel="noopener">הוראות הקמה</a>.</p>
           <div class="grid-inputs">
             <label>כתובת ה-Web App<input id="syncUrl" type="url" dir="ltr" placeholder="https://script.google.com/macros/s/…/exec"></label>
             <label>מפתח<input id="syncKey" dir="ltr" autocomplete="off"></label>
@@ -1564,7 +1564,7 @@
       const blob = new Blob([JSON.stringify({ cfg, fam }, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'hotwatermeter.json';
+      a.download = 'solarwatermeter.json';
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     } else if (b.id === 'resetLearn') {
@@ -1607,7 +1607,7 @@
     } else if (b.id === 'shareLink') {
       const url = joinLink();
       const done = (t) => { $('shareMsg').textContent = t; };
-      if (navigator.share) navigator.share({ title: 'מד מים חמים', text: 'הצטרפות ליומן המקלחות של המשפחה', url }).catch(() => {});
+      if (navigator.share) navigator.share({ title: 'מד דוד שמש', text: 'הצטרפות ליומן המקלחות של המשפחה', url }).catch(() => {});
       else navigator.clipboard.writeText(url).then(() => done('הקישור הועתק ✓ – שלחו אותו לבני המשפחה'), () => done(url));
     }
   });
