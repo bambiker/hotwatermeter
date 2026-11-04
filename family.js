@@ -1727,9 +1727,48 @@
     unlockAudio();
     const b = { id: uid(), t: Date.now(), min };
     commit([{ op: 'boiler', b }]);
-    if (min != null) armAlarm(b, forName);
+    if (min != null) {
+      armAlarm(b, forName);
+      // the phone itself can remind even when it's locked or silent: Android's clock timer, an iPhone calendar alert
+      const said = `🔌 נרשם: הדוד דלוק ל-${min} דק׳${forName ? ` (ל${forName})` : ''}`;
+      if (ANDROID) showToast(said, () => phoneTimer(min, forName), 20000, '⏰ טיימר בטלפון');
+      else if (IOS) showToast(said, () => calendarReminder(b, forName), 20000, '⏰ תזכורת ביומן');
+    }
     return true;
   }
+  // The clock app's timer, with a label that says why it rings. Chrome may refuse to open it from a web page;
+  // then it comes back to the page with #timer-failed, which explains.
+  const ANDROID = /android/i.test(navigator.userAgent);
+  const IOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  // iPhone: no web page can set the clock's timer, but a calendar event with an alert at the end time can be
+  // added in two taps (Safari opens it with "Add to Calendar")
+  function calendarReminder(b, forName) {
+    const at = (t) => new Date(t).toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+    const end = b.t + b.min * 60000;
+    const text = (s) => s.replace(/[\\,;]/g, (c) => '\\' + c);
+    const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//solarwatermeter//HE', 'BEGIN:VEVENT',
+      'UID:' + b.id + '@solarwatermeter', 'DTSTAMP:' + at(Date.now()), 'DTSTART:' + at(end), 'DTEND:' + at(end + 5 * 60000),
+      'SUMMARY:' + text('🔌 לכבות את הדוד'),
+      'DESCRIPTION:' + text(`עברו ${b.min} הדקות${forName ? ` – ${forName} יכול/ה להתקלח` : ''}. אם לדוד יש שעון שמכבה אותו לבד, אפשר להתעלם. (מד דוד שמש)`),
+      'BEGIN:VALARM', 'TRIGGER:PT0S', 'ACTION:DISPLAY', 'DESCRIPTION:' + text('🔌 לכבות את הדוד'), 'END:VALARM',
+      'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+    location.href = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics);
+  }
+  function phoneTimer(min, forName) {
+    const label = `🔌 לכבות את הדוד${forName ? ` – ${forName} יכול/ה להתקלח` : ` (${min} דק׳)`}`;
+    const back = location.href.split('#')[0] + '#timer-failed';
+    location.href = 'intent:#Intent;action=android.intent.action.SET_TIMER;' +
+      'i.android.intent.extra.alarm.LENGTH=' + Math.round(min * 60) + ';' +
+      'S.android.intent.extra.alarm.MESSAGE=' + encodeURIComponent(label) + ';' +
+      'B.android.intent.extra.alarm.SKIP_UI=true;' +
+      'S.browser_fallback_url=' + encodeURIComponent(back) + ';end';
+  }
+  function timerFailed() {
+    if (location.hash !== '#timer-failed') return;
+    history.replaceState(null, '', location.pathname + location.search);
+    showToast('הטלפון לא אפשר לאתר לפתוח את הטיימר של השעון. האתר עדיין יצפצף בסוף הזמן כשהוא פתוח – או שאפשר לכוון טיימר באפליקציית השעון.', null, 20000);
+  }
+  addEventListener('hashchange', timerFailed);
   let audio = null;
   function unlockAudio() {
     try {
@@ -1782,7 +1821,7 @@
   // any tap makes the sound ready, so a run started before a reload can still beep
   document.addEventListener('pointerdown', () => { if (!audio && store.get(ALARMS, []).length) unlockAudio(); }, { passive: true });
 
-  function showToast(text, action, ms) {
+  function showToast(text, action, ms, label = 'ביטול') {
     if (!toast) {
       toast = document.createElement('div');
       toast.className = 'toast';
@@ -1790,7 +1829,7 @@
       document.body.appendChild(toast);
     }
     clearTimeout(toast.timer);
-    toast.innerHTML = `<span>${esc(text)}</span>${action ? '<button type="button">ביטול</button>' : ''}`;
+    toast.innerHTML = `<span>${esc(text)}</span>${action ? `<button type="button">${esc(label)}</button>` : ''}`;
     toast.hidden = false;
     if (action) toast.querySelector('button').onclick = () => { toast.hidden = true; action(); };
     toast.timer = setTimeout(() => { toast.hidden = true; }, ms);
@@ -2034,6 +2073,7 @@
   document.addEventListener('hwm:weather', (e) => onWeather(e.detail));
   if (window.HWM && HWM.weather) onWeather(HWM.weather);
   scheduleAlarms(); // a timed run started here before the page was reloaded
+  timerFailed();
 
   // keep "now" fresh while the page stays open
   // every minute while the boiler is on (the tank is warming), every 5 otherwise
