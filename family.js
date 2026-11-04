@@ -778,6 +778,33 @@
     return { p, rows, total: rows.reduce((s, r) => s + r.min, 0) };
   }
 
+  // With the boiler already on: for each person in the shower order, how many more minutes of this run until
+  // they get a hot shower right after the ones before them. The last one's number is how long to keep it on
+  // for everyone – so the list and the advice always agree.
+  function keepOn(p) {
+    return p.rows.map((r, i) => {
+      const first = p.rows.slice(0, i + 1).map(x => x.m);
+      const okAll = (min) => {
+        let s = heatS(p.S0, min);
+        for (const m of first) { const D = drawS(s, planNeed(m)); if (D.end < okEnd() - 0.05) return false; s = D.S; }
+        return true;
+      };
+      if (okAll(0)) return Object.assign({}, r, { min: 0, capped: false });
+      const max = minutesToStat(p.S0);
+      if (!okAll(max)) return Object.assign({}, r, { min: Math.max(1, max), capped: true });
+      let lo = 0, hi = max;
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (okAll(mid)) hi = mid; else lo = mid; }
+      return Object.assign({}, r, { min: Math.max(1, hi), capped: false });
+    });
+  }
+  function keepOnAdvice(rows) {
+    if (!rows.length) return '';
+    const last = rows[rows.length - 1], hot = rows.filter(r => !r.capped).length;
+    if (!last.min) return '<p class="advice ok">✅ אפשר לכבות את הדוד – יספיק לכולם</p>';
+    if (last.capped) return `<p class="advice warn">🔥 גם אם הדוד יישאר דלוק, ברצף יספיק רק ל-${ltr(hot)} מתוך ${ltr(rows.length)} – הטרמוסטט עוצר אותו. לשאר כדאי להדליק שוב אחרי.${why('heat-each-or-all')}</p>`;
+    return `<p class="advice warn">🔥 להשאיר דלוק עוד כ-${ltr(last.min)} דקות – ואז יספיק לכולם ברצף.${why('how-long')}</p>`;
+  }
+
   // The other way: switch the boiler on once before the first shower and leave it on until the last one.
   // It keeps heating during each shower for the next ones, so the wait before is shorter – the electricity
   // is about the same. Showers back to back, each as long as its water at ~8 liters a minute.
@@ -1066,6 +1093,7 @@
     let head, body = '';
     if (tn.total != null) {
       const he = heatEach(sh.t, sh.away, sh.slot);
+      const kept = on ? keepOn(he.p) : null; // with the boiler on: minutes more of this run, per person
       const all = tn.ok === tn.total;
       if (!tn.total) {
         // nobody left to shower: say so, and what's still in the tank for anyone who wants one after all
@@ -1075,7 +1103,7 @@
           <p class="note">${n ? `בדוד נשאר מספיק לעוד ~${ltr(n)} ${n === 1 ? 'מקלחת' : 'מקלחות'} בלי דוד` : `למקלחת נוספת צריך להדליק דוד כ-${ltr(mins)} דקות`}</p>`;
       } else head = `<div class="k">${when} (${ltr(hhmm(sh.t))}) ${cond} יספיק</div>
         <div class="big">${all ? (tn.total === 1 ? 'מספיק' : 'לכולם') : tn.ok ? `ל־${ltr(tn.ok)} מתוך ${ltr(tn.total)}` : 'לאף אחד'}</div>`;
-      const row = new Map(he.rows.map(r => [r.m.id, r]));
+      const row = new Map((kept || he.rows).map(r => [r.m.id, r]));
       const done = sh.done;
       const item = (m) => {
         const r = row.get(m.id);
@@ -1085,7 +1113,7 @@
         return `<li class="${r.min ? 'heat' : 'ok'}"><button type="button" data-away="${m.id}" aria-pressed="false"><span class="dot">${r.min ? '' : CHECK}</span>${esc(m.name)}<span class="st">${st}</span></button></li>`;
       };
       body = `<ul class="people">${slotPeople(sh.slot).map(item).join('')}</ul>
-        ${on ? (tn.total ? adviceHtml(he.p, true) : '')
+        ${on ? (tn.total ? keepOnAdvice(kept) : '')
           : he.total ? `<p class="advice warn">🔌 כל אחד מדליק את הדוד לפני המקלחת שלו, לפי הדקות שליד השם – סה״כ כ-${ltr(he.total)} דקות.${why('heat-each-or-all')}</p>` : ''}
         ${on ? '' : (() => { const th = heatThrough(he); return th && he.total - th.lead >= 5 ? `<p class="note">אפשר גם להדליק כ-${ltr(th.lead)} דקות לפני המקלחת הראשונה ולהשאיר דלוק עד שכולם מתקלחים ברצף: הדוד ממשיך לחמם בזמן המקלחות, אז כולם מסיימים כ-${ltr(he.total - th.lead)} דקות מוקדם יותר. החשמל כמעט זהה (כ-${ltr(th.total)} דקות דוד) – אבל מים חמים "שלא נגמרים" נוטים להאריך מקלחות.</p>` : ''; })()}
         <p class="note">לחיצה על שם: לא מתקלח/ת ${sh.isNow ? 'עכשיו' : 'הערב'} (לא בבית, התקלח/ה בבריכה…) – והחישוב מתעדכן.</p>`;
@@ -1255,13 +1283,13 @@
     } else {
       const on = activeRun(now);
       const mins = on ? Math.round((now - on.t) / 60000) : 0;
-      // from now, for those who haven't showered yet tonight and are home
-      const away = new Set([...awayTonight(now), ...showeredTonight(now)]);
-      const at = Math.max(now + 60000, tonightAt(now));
-      const eve = plan(at, 'evening', [], away), each = heatEach(at, away).rows.filter(r => r.min);
+      // the same people and time as the main card (who's home, who already showered, now or this evening)
+      const sh = showersTonight(now), he = heatEach(sh.t, sh.away, sh.slot);
+      const eve = he.p, each = he.rows.filter(r => r.min), kept = on ? keepOn(eve) : [];
       html = on ? `<h2>🔥 הדוד דלוק מאז ${ltr(hhmm(on.t))}</h2>
           <p class="note">${on.min != null ? `ייכבה בערך ב-${ltr(hhmm(on.t + on.min * 60000))}` : `${ltr(mins)} דק׳ עד עכשיו`}</p>
-          ${adviceHtml(eve, true)}
+          ${kept.some(r => r.min) ? `<ul class="who">${kept.map(r => `<li>${r.min ? `⏳ ${esc(r.m.name)} – עוד ${ltr(r.min)} דק׳${r.capped ? ' (גם אז לא עד הסוף)' : ''}` : `✅ ${esc(r.m.name)} – מספיק כבר`}</li>`).join('')}</ul>` : ''}
+          ${eve.rows.length ? keepOnAdvice(kept) : adviceHtml(eve, true)}
           <button type="button" class="big-btn primary" data-sheet-boil-off>כיביתי את הדוד</button>`
         : `<h2>הדלקתם את הדוד? לכמה זמן?</h2>
           ${each.length ? `<p class="k">כמה להדליק לפני כל מקלחת:</p><ul class="who">${each.map(r => `<li>🔌 ${esc(r.m.name)} – ${ltr(r.min)} דק׳${r.capped ? ' (גם אז לא עד הסוף)' : ''}</li>`).join('')}</ul>`
