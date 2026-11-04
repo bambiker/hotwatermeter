@@ -488,10 +488,13 @@
     return { t: 'כמעט לא מחמם', c: 'bad' };
   }
 
+  // what the forecast is for, said plainly for someone new ("המיקום שלי" alone reads like a heading)
+  const placeLabel = (l) => (l.geo ? '📍 משתמש במיקום שלך' : '📍 משתמש במיקום: ' + l.name);
+
   // ---------- Data ----------
   async function load() {
     if (!loc) return;
-    $('place').textContent = '📍 ' + loc.name;
+    $('place').textContent = placeLabel(loc);
     $('status').textContent = 'טוען נתונים…';
     $('status').classList.remove('err');
     const url = (tilt, az) => 'https://api.open-meteo.com/v1/forecast?latitude=' + loc.lat + '&longitude=' + loc.lon +
@@ -603,7 +606,7 @@
   }
   {
     const more = $('moreBox'), key = 'hwm.open.moreBox';
-    if (store.get(key, false)) more.open = true;
+    if (store.get(key, true)) more.open = true; // open unless closed before: the charts show what the site does
     more.addEventListener('toggle', () => store.set(key, more.open));
   }
 
@@ -757,7 +760,7 @@
     );
   }
   $('geo').addEventListener('click', () => useMyLocation(msg => {
-    $('place').textContent = loc ? '📍 ' + loc.name : '';
+    $('place').textContent = loc ? placeLabel(loc) : '';
     $('status').textContent = msg + (loc ? '' : ' – אפשר לחפש עיר.');
   }));
 
@@ -841,7 +844,7 @@
   })();
 </script>
 <!-- ?v= changes with each release, so a phone never pairs a new page with an old cached script -->
-<script src="config.js?v=20261102e"></script>
-<script src="family.js?v=20261102e"></script>
+<script src="config.js?v=20261104a"></script>
+<script src="family.js?v=20261104a"></script>
 </body>
 </html>
