@@ -329,6 +329,16 @@
   }
   // Minutes until the element's thermostat stops it
   const minutesToStat = (S) => (S.t >= stat() ? 0 : Math.ceil((stat() - S.t) / (elecPerMin() / accF())));
+  // ---------- The advice is a little cautious (the learning isn't) ----------
+  // A shower counts as hot only if the tank would end it SAFE_END degrees above shower temperature – about
+  // two more minutes of water – so a slightly longer or hotter shower than usual still stays hot. Until the
+  // site has data on someone, they're taken to use a quarter more than the default: a first guess should
+  // rather say too few showers than too many.
+  const SAFE_END = 2, NEW_PERSON = 1.25;
+  const planNeed = (m) => (m && m.liters != null ? m.liters : cfg.perPerson * NEW_PERSON);
+  const planDraw = (m) => planNeed(m) * perLiter();
+  const okEnd = () => tsh() + SAFE_END;
+
   // Boiler minutes for one shower of L liters to be hot to the end (capped: not even at the thermostat).
   // With an accelerator there's a margin: the water goes cold suddenly there, so a shower planned to end
   // exactly at shower temperature ends cold at the smallest error in the estimate. (Tested on a stratified
@@ -336,8 +346,8 @@
   const HEAT_MARGIN = 3; // °C, accelerator only
   function minutesFor(S, L) {
     const endAfter = (m) => drawS(heatS(S, m), L).end;
-    if (endAfter(0) >= tsh() - 0.05) return { min: 0, capped: false }; // hot enough without the boiler
-    const ok = (m) => endAfter(m) >= tsh() + (accF() < 1 ? HEAT_MARGIN : -0.05);
+    if (endAfter(0) >= okEnd() - 0.05) return { min: 0, capped: false }; // hot enough without the boiler
+    const ok = (m) => endAfter(m) >= tsh() + Math.max(SAFE_END, accF() < 1 ? HEAT_MARGIN : 0) - 0.05;
     const max = minutesToStat(S);
     if (!ok(max)) return { min: Math.max(1, max), capped: endAfter(max) < tsh() - 0.05 };
     let lo = 0, hi = max;
@@ -672,20 +682,20 @@
     let S = S0;
     const who = fam.members.filter(m => !isGeneric(m) && (!m.skip || !m.skip[slot]) && !away.has(m.id));
     const rows = who.map(m => {
-      const D = drawS(S, need(m));
-      const st = D.end >= tsh() - 0.05 ? 'ok' : D.start > tsh() ? 'partial' : 'cold';
+      const D = drawS(S, planNeed(m));
+      const st = D.end >= okEnd() - 0.05 ? 'ok' : D.start > tsh() ? 'partial' : 'cold';
       S = D.S;
       return { m, st };
     });
     // boiler minutes before the first shower for everyone in a row, and how many that gives a full shower
-    const inRow = (min) => { let s = heatS(S0, min), n = 0; for (const m of who) { const D = drawS(s, need(m)); if (D.end < tsh() - 0.05) break; s = D.S; n++; } return n; };
+    const inRow = (min) => { let s = heatS(S0, min), n = 0; for (const m of who) { const D = drawS(s, planNeed(m)); if (D.end < okEnd() - 0.05) break; s = D.S; n++; } return n; };
     let minutes, withHeater;
     if (accF() >= 1) { // one volume: straight to the temperature everyone needs (or the thermostat)
-      const needT = tsh() + who.reduce((s, m) => s + drawOf(m), 0);
+      const needT = okEnd() + who.reduce((s, m) => s + planDraw(m), 0);
       const target = Math.min(needT, Math.max(stat(), T0));
       minutes = T0 >= needT ? 0 : Math.ceil((target - T0) / elecPerMin());
       let Th = target; withHeater = 0;
-      for (const m of who) { if (Th - drawOf(m) < tsh() - 0.05) break; Th -= drawOf(m); withHeater++; }
+      for (const m of who) { if (Th - planDraw(m) < okEnd() - 0.05) break; Th -= planDraw(m); withHeater++; }
     } else { // accelerator: only the top heats, so more minutes stop helping once it reaches the thermostat
       const max = minutesToStat(S0);
       if (inRow(0) === who.length) { minutes = 0; withHeater = who.length; }
@@ -704,9 +714,9 @@
   const isGeneric = (m) => m.id.startsWith('gen');
   const generic = () => fam.members.find(isGeneric);
   function anonShowers(S) {
-    if (accF() >= 1) return Math.floor(Math.max(0, (S.t - tsh()) / perLiter()) / need(generic()));
+    if (accF() >= 1) return Math.floor(Math.max(0, (S.t - okEnd()) / perLiter()) / planNeed(generic()));
     let n = 0;
-    for (; n < 30; n++) { const D = drawS(S, need(generic())); if (D.end < tsh()) break; S = D.S; }
+    for (; n < 30; n++) { const D = drawS(S, planNeed(generic())); if (D.end < okEnd()) break; S = D.S; }
     return n;
   }
 
@@ -750,19 +760,19 @@
     let S = p.S0;
     const rows = p.rows.map(r => {
       if (accF() >= 1) { // one volume: heat to exactly what this person needs (or the thermostat)
-        const d = drawOf(r.m), need0 = tsh() + d;
+        const d = planDraw(r.m), need0 = okEnd() + d;
         let T = S.t, min = 0, capped = false;
         if (T < need0 - 0.05) {
           const target = Math.min(need0, Math.max(stat(), T));
           min = Math.max(1, Math.ceil((target - T) / elecPerMin()));
-          capped = target < need0 - 0.05;
+          capped = target < tsh() + d - 0.05; // not even hot to the end at the thermostat
           T = target;
         }
         S = tank(Math.max(tin(), T - d));
         return Object.assign({}, r, { min, capped });
       }
-      const { min, capped } = minutesFor(S, need(r.m));
-      S = drawS(heatS(S, min), need(r.m)).S;
+      const { min, capped } = minutesFor(S, planNeed(r.m));
+      S = drawS(heatS(S, min), planNeed(r.m)).S;
       return Object.assign({}, r, { min, capped });
     });
     return { p, rows, total: rows.reduce((s, r) => s + r.min, 0) };
@@ -776,12 +786,12 @@
   function heatThrough(he) {
     const rows = he.rows;
     if (rows.filter(r => r.min).length < 2) return null; // worth it only when several need the boiler
-    const showerMin = rows.reduce((s, r) => s + need(r.m) / FLOW, 0);
+    const showerMin = rows.reduce((s, r) => s + planNeed(r.m) / FLOW, 0);
     const ok = (lead) => {
       let S = heatS(he.p.S0, lead);
       for (const r of rows) {
-        const D = drawS(heatS(S, need(r.m) / FLOW), need(r.m)); // heating on during the shower, up to the thermostat
-        if (D.end < tsh() - 0.05) return false;
+        const D = drawS(heatS(S, planNeed(r.m) / FLOW), planNeed(r.m)); // heating on during the shower, up to the thermostat
+        if (D.end < okEnd() - 0.05) return false;
         S = D.S;
       }
       return true;
@@ -831,7 +841,7 @@
       const extra = moves.map(mv => ({ t: mv.t, member: mv.m.id, outcome: 'planned' }));
       const p = plan(tEve, 'evening', extra, new Set([...away, ...moves.map(mv => mv.m.id)]));
       // each moved person needs a hot shower at their hour too
-      const middayOk = moves.filter(mv => drawS(run(mv.t, extra.filter(e => e.t < mv.t)).S, need(mv.m)).end >= tsh() - 0.05).length;
+      const middayOk = moves.filter(mv => drawS(run(mv.t, extra.filter(e => e.t < mv.t)).S, planNeed(mv.m)).end >= okEnd() - 0.05).length;
       return { hot: ok(p) + middayOk, middayOk, moves };
     };
     const candidates = base.rows.map(r => r.m);
@@ -1059,7 +1069,7 @@
       const all = tn.ok === tn.total;
       if (!tn.total) {
         // nobody left to shower: say so, and what's still in the tank for anyone who wants one after all
-        const n = anonShowers(he.p.S0), mins = minutesFor(he.p.S0, need(null)).min;
+        const n = anonShowers(he.p.S0), mins = minutesFor(he.p.S0, planNeed(null)).min;
         head = `<div class="k">${when} (${ltr(hhmm(sh.t))})</div>
           <div class="big">${sh.done.size ? 'כולם כבר התקלחו' : 'אף אחד לא מתקלח'}</div>
           <p class="note">${n ? `בדוד נשאר מספיק לעוד ~${ltr(n)} ${n === 1 ? 'מקלחת' : 'מקלחות'} בלי דוד` : `למקלחת נוספת צריך להדליק דוד כ-${ltr(mins)} דקות`}</p>`;
@@ -1101,7 +1111,7 @@
         return `<p class="advice warn">🔥 הדוד דלוק מאז ${ltr(hhmm(on.t))}${on.min != null ? ` (עד ${ltr(hhmm(on.t + on.min * 60000))})` : ''} – מחמם ${accF() < 1 ? 'את החלק העליון ' : ''}בכ-${ltr(fmt(perHour, 0) + '°')} לשעה${cur >= stat - 0.5 ? `, והגיע לטרמוסטט (${ltr(stat + '°')})` : ''}.</p>`;
       })()}
       ${body}
-      ${learnableLogs().length < 3 ? '<p class="note">זו הערכה כללית לדוד ממוצע – עוד לא מכירים את הבית שלכם.</p>' : ''}
+      ${learnableLogs().length < 3 ? '<p class="note">זו הערכה כללית וזהירה לדוד ממוצע – עוד לא מכירים את הבית שלכם, אז מניחים מקלחות קצת ארוכות.</p>' : ''}
       <div class="hero-strip"><span>${strip}</span><a href="#moreBox" data-more>פרטים וגרפים ‹</a></div>
     </section>`;
   }
@@ -1452,7 +1462,7 @@
 
     <details class="card fam" id="famBox" data-pane="family" ${fam.members.length ? '' : 'open'}>
       <summary>👨‍👩‍👧 בני המשפחה</summary>
-      <p class="note">לא צריך לדעת כלום על הדוד. אחרי כל מקלחת רושמים אם היו מים חמים עד הסוף, והאתר לומד כמה כל אחד צורך ביחס לדוד שלכם – לפי מי התקלח לפניו ולפי השמש באותו יום. עד שיש מספיק מקלחות משתמשים בהערכה של ${cfg.perPerson} ליטר.</p>
+      <p class="note">לא צריך לדעת כלום על הדוד. אחרי כל מקלחת רושמים אם היו מים חמים עד הסוף, והאתר לומד כמה כל אחד צורך ביחס לדוד שלכם – לפי מי התקלח לפניו ולפי השמש באותו יום. עד שיש מספיק מקלחות משתמשים בהערכה זהירה של ${Math.round(cfg.perPerson * NEW_PERSON)} ליטר.</p>
       ${(() => { const acc = accuracy(); return acc ? `<p class="acc">🎯 המודל צודק ב-${ltr(acc.pct + '%')} מ-${ltr(acc.n)} המקלחות של החודש האחרון</p>` : ''; })()}
       ${fam.members.length ? `<table class="members"><thead><tr><th>שם</th><th>מדוד חם למקלחת</th><th>בוקר</th><th>ערב</th><th></th><th></th></tr></thead><tbody>
         ${fam.members.map((m, i) => `<tr data-id="${m.id}">
