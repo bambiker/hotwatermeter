@@ -1292,11 +1292,12 @@
           ${eve.rows.length ? keepOnAdvice(kept) : adviceHtml(eve, true)}
           <button type="button" class="big-btn primary" data-sheet-boil-off>כיביתי את הדוד</button>`
         : `<h2>הדלקתם את הדוד? לכמה זמן?</h2>
-          ${each.length ? `<p class="k">כמה להדליק לפני כל מקלחת:</p><ul class="who">${each.map(r => `<li>🔌 ${esc(r.m.name)} – ${ltr(r.min)} דק׳${r.capped ? ' (גם אז לא עד הסוף)' : ''}</li>`).join('')}</ul>`
+          ${each.length ? `<p class="k">להדליק לפני המקלחת של:</p><div class="outs">${each.map(r => `<button type="button" data-sheet-boil="${r.min}" data-who2="${esc(r.m.name)}"><span>🔌 ${esc(r.m.name)} – ${ltr(r.min)} דק׳${r.capped ? ' (גם אז לא עד הסוף)' : ''}</span></button>`).join('')}</div>
+            <p class="k">או לבחור זמן:</p>`
             : eve.rows.length ? '<p class="advice ok">✅ הערב יספיק לכולם בלי דוד</p>' : ''}
           <div class="boil-grid">${[10, 20, 30, 45, 60, 90].map(m => `<button type="button" data-sheet-boil="${m}">${ltr(m)} דק׳</button>`).join('')}
             <button type="button" class="wide" data-sheet-boil="open">עד שאכבה</button></div>
-          <p class="note">הדלקה מלפני כמה שעות? אפשר לרשום אותה בדיעבד בלשונית "יומן".</p>`;
+          <p class="note">⏰ כשהזמן ייגמר האתר יצפצף, כל עוד הוא פתוח (בטלפון נעול או במצב שקט – לא). הדלקה מלפני כמה שעות? אפשר לרשום אותה בדיעבד בלשונית "יומן".</p>`;
     }
     w.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-label="${sheet.kind === 'log' ? 'רישום מקלחת' : 'הדוד החשמלי'}" tabindex="-1">
       <div class="grab"></div><button type="button" class="sheet-close" data-sheet-close aria-label="סגירה">✕</button>${html}</div>`;
@@ -1384,7 +1385,7 @@
       setTimeout(() => logShower(d.sheetOut), 30);
     }
     else if (d.sheetBoil) {
-      commit([{ op: 'boiler', b: { id: uid(), t: Date.now(), min: d.sheetBoil === 'open' ? null : +d.sheetBoil } }]);
+      startBoiler(d.sheetBoil === 'open' ? null : +d.sheetBoil, d.who2 || null);
       closeSheet();
     } else if (d.sheetBoilOff != null) {
       const r = activeRun(Date.now());
@@ -1718,6 +1719,69 @@
   const undoable = (text, undo) => showToast(text, undo, 10000);
   let toast = null;
   // action: an "undo" callback for the button, or null for a message only
+  // ---------- Starting the boiler, and "time's up" for a timed run started here ----------
+  // Browsers let a page make a sound only after a tap, so the sound is made ready on the tap that starts the
+  // run; when the time is up the page beeps, vibrates and says so – while it's open. (A locked phone or a
+  // closed site can't beep: then the message waits for the next time it's opened.)
+  function startBoiler(min, forName) {
+    unlockAudio();
+    const b = { id: uid(), t: Date.now(), min };
+    commit([{ op: 'boiler', b }]);
+    if (min != null) armAlarm(b, forName);
+    return true;
+  }
+  let audio = null;
+  function unlockAudio() {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      audio.resume();
+      const o = audio.createOscillator(), g = audio.createGain();
+      g.gain.value = 0; o.connect(g); g.connect(audio.destination); o.start(); o.stop(audio.currentTime + 0.05);
+    } catch {}
+  }
+  function beep() {
+    try {
+      if (!audio) return false;
+      audio.resume();
+      const t0 = audio.currentTime;
+      for (let i = 0; i < 4; i++) { // four short high beeps
+        const o = audio.createOscillator(), g = audio.createGain(), at = t0 + i * 0.4;
+        o.type = 'sine'; o.frequency.value = 880;
+        g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(0.5, at + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, at + 0.28);
+        o.connect(g); g.connect(audio.destination); o.start(at); o.stop(at + 0.3);
+      }
+      return true;
+    } catch { return false; }
+  }
+  const ALARMS = 'hwm.alarms'; // [{ id, end, min, name }] – runs started on this device
+  function armAlarm(b, name) {
+    const list = store.get(ALARMS, []).filter(a => a.end > Date.now() - DAY);
+    list.push({ id: b.id, end: b.t + b.min * 60000, min: b.min, name });
+    store.set(ALARMS, list);
+    scheduleAlarms();
+  }
+  let alarmTimer = null;
+  function scheduleAlarms() {
+    clearTimeout(alarmTimer);
+    const now = Date.now(), list = store.get(ALARMS, []);
+    // switched off early ("כיביתי" sets its real length) or deleted: no alarm
+    const live = list.filter(a => fam.boilers.some(x => x.id === a.id && x.min != null && x.t + x.min * 60000 === a.end));
+    const due = live.filter(a => a.end <= now), later = live.filter(a => a.end > now);
+    if (due.length || live.length !== list.length) store.set(ALARMS, later);
+    if (due.length) ring(due[due.length - 1], now);
+    const next = later.sort((x, y) => x.end - y.end)[0];
+    if (next) alarmTimer = setTimeout(scheduleAlarms, Math.min(next.end - now + 200, 2 ** 31 - 1));
+  }
+  function ring(a, now) {
+    const late = now - a.end > 2 * 60000; // the page was closed or asleep when it was due
+    if (!late) { beep(); try { navigator.vibrate && navigator.vibrate([300, 150, 300, 150, 300]); } catch {} }
+    const what = `${a.min} הדקות של הדוד${a.name ? ` (ל${a.name})` : ''}`;
+    showToast(`⏰ ${late ? `${what} נגמרו ב-${wx ? hhmm(a.end) : ''}` : `עברו ${what}`} – זה הזמן לכבות אותו, אם הוא לא כבה לבד.`, null, 60000);
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleAlarms(); });
+  // any tap makes the sound ready, so a run started before a reload can still beep
+  document.addEventListener('pointerdown', () => { if (!audio && store.get(ALARMS, []).length) unlockAudio(); }, { passive: true });
+
   function showToast(text, action, ms) {
     if (!toast) {
       toast = document.createElement('div');
@@ -1772,8 +1836,7 @@
       b.disabled = true; b.textContent = 'מתחבר…';
       connect($('syncUrl').value, $('syncKey').value);
     } else if (b.dataset.boil) {
-      const min = b.dataset.boil === 'open' ? null : +b.dataset.boil;
-      commit([{ op: 'boiler', b: { id: uid(), t: Date.now(), min } }]);
+      startBoiler(b.dataset.boil === 'open' ? null : +b.dataset.boil);
     } else if (b.id === 'boilerOff') {
       const r = activeRun(Date.now());
       if (r) commit([{ op: 'boiler', b: { id: r.id, min: Math.floor((Date.now() - r.t) / 600) / 100 } }]); // rounded down so the run has ended by now
@@ -1970,6 +2033,7 @@
   }
   document.addEventListener('hwm:weather', (e) => onWeather(e.detail));
   if (window.HWM && HWM.weather) onWeather(HWM.weather);
+  scheduleAlarms(); // a timed run started here before the page was reloaded
 
   // keep "now" fresh while the page stays open
   // every minute while the boiler is on (the tank is warming), every 5 otherwise
